@@ -41,7 +41,7 @@ pub async fn start_login_flow(
                 let cookies = body["cookies"].as_str().map(|s| s.to_string());
 
                 let mut manager = state.lock().await;
-                match manager.add_account_by_token(token.to_string(), cookies).await {
+                match manager.add_account_by_token(token.to_string(), cookies, None).await {
                     Ok(account) => {
                         let _ = app.emit("login-success", &account.email);
                         // 延迟关闭窗口，让 warp 先返回响应

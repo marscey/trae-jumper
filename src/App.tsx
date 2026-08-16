@@ -29,6 +29,7 @@ function App() {
   const [showAddModal, setShowAddModal] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [importing, setImporting] = useState(false);
   const [currentPage, setCurrentPage] = useState("dashboard");
   const [viewMode, setViewMode] = useState<ViewMode>("grid");
 
@@ -481,15 +482,44 @@ function App() {
       if (!file) return;
 
       try {
+        setImporting(true);
         const text = await file.text();
         const count = await api.importAccounts(text);
         addToast("success", `成功导入 ${count} 个账号`);
         await loadAccounts();
       } catch (err: any) {
         addToast("error", err.message || "导入失败");
+      } finally {
+        setImporting(false);
       }
     };
     input.click();
+  };
+
+  // 清空所有数据（弹窗确认）
+  const handleClearData = () => {
+    if (accounts.length === 0) {
+      addToast("warning", "没有数据可清空");
+      return;
+    }
+
+    setConfirmModal({
+      isOpen: true,
+      title: "清空所有数据",
+      message: `确定要清空所有账号数据吗？\n\n此操作将删除全部 ${accounts.length} 个账号的数据，包括：\n• 账号信息\n• Token 和 Cookies\n• 使用量统计\n\n此操作不可恢复，请谨慎操作！`,
+      type: "danger",
+      onConfirm: async () => {
+        setConfirmModal(null);
+        try {
+          const count = await api.clearAllAccounts();
+          setSelectedIds(new Set());
+          addToast("success", `已清空 ${count} 个账号数据`);
+          await loadAccounts();
+        } catch (err: any) {
+          addToast("error", err.message || "清空数据失败");
+        }
+      },
+    });
   };
 
   // 批量刷新选中账号（优化：并行处理，添加进度反馈）
@@ -808,7 +838,7 @@ function App() {
                 <p>配置应用程序选项</p>
               </div>
             </header>
-            <Settings onToast={addToast} onExport={handleShowExportInfo} onImport={handleShowImportInfo} />
+            <Settings onToast={addToast} onExport={handleShowExportInfo} onImport={handleShowImportInfo} onClearData={handleClearData} />
           </>
         )}
 
@@ -827,6 +857,16 @@ function App() {
 
       {/* Toast 通知 */}
       <Toast messages={toasts} onRemove={removeToast} />
+
+      {/* 导入加载遮罩 */}
+      {importing && (
+        <div className="importing-overlay">
+          <div className="importing-modal">
+            <div className="spinner"></div>
+            <p>正在导入账号...</p>
+          </div>
+        </div>
+      )}
 
       {/* 确认弹窗 */}
       {confirmModal && (

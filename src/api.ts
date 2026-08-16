@@ -78,6 +78,11 @@ export async function importAccounts(data: string): Promise<number> {
   return invoke("import_accounts", { data });
 }
 
+// 清空所有账号数据
+export async function clearAllAccounts(): Promise<number> {
+  return invoke("clear_all_accounts");
+}
+
 // 获取使用事件
 export async function getUsageEvents(
   accountId: string,

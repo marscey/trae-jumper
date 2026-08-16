@@ -2127,6 +2127,41 @@ body {
   }
 }
 
+/* 导入加载遮罩 */
+.importing-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.4);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 10000;
+  animation: fadeIn 0.2s ease-out;
+}
+
+.importing-modal {
+  background: var(--bg-primary);
+  border-radius: var(--radius-lg);
+  padding: 40px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-md);
+  box-shadow: var(--shadow-lg);
+  animation: fadeIn 0.3s ease-out;
+}
+
+.importing-modal p {
+  font-size: 15px;
+  color: var(--text-primary);
+  font-weight: 500;
+}
+
 /* Scrollbar - 滚动条 */
 ::-webkit-scrollbar {
   width: 8px;

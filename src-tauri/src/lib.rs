@@ -48,7 +48,7 @@ type Result<T> = std::result::Result<T, ApiError>;
 #[tauri::command]
 async fn add_account_by_token(token: String, cookies: Option<String>, state: State<'_, AppState>) -> Result<Account> {
     let mut manager = state.account_manager.lock().await;
-    manager.add_account_by_token(token, cookies).await.map_err(Into::into)
+    manager.add_account_by_token(token, cookies, None).await.map_err(Into::into)
 }
 
 /// 删除账号
@@ -105,6 +105,13 @@ async fn export_accounts(state: State<'_, AppState>) -> Result<String> {
 async fn import_accounts(data: String, state: State<'_, AppState>) -> Result<usize> {
     let mut manager = state.account_manager.lock().await;
     manager.import_accounts(&data).await.map_err(Into::into)
+}
+
+/// 清空所有账号数据
+#[tauri::command]
+async fn clear_all_accounts(state: State<'_, AppState>) -> Result<usize> {
+    let mut manager = state.account_manager.lock().await;
+    manager.clear_all_accounts().map_err(Into::into)
 }
 
 /// 获取使用事件
@@ -274,6 +281,7 @@ pub fn run() {
             update_account_token,
             export_accounts,
             import_accounts,
+            clear_all_accounts,
             get_usage_events,
             read_trae_account,
             get_machine_id,

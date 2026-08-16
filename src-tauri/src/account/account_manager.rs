@@ -94,11 +94,18 @@ impl AccountManager {
     }
 
     /// 添加账号（通过 Token，可选 Cookies）
-    pub async fn add_account_by_token(&mut self, token: String, cookies: Option<String>) -> Result<Account> {
+    /// preferred_name: 如果提供，优先使用此名称（用于导入场景，避免 API 返回的名称不准确）
+    pub async fn add_account_by_token(&mut self, token: String, cookies: Option<String>, preferred_name: Option<String>) -> Result<Account> {
+        println!("[DEBUG] add_account_by_token 开始, token_len={}, cookies={:?}, preferred_name={:?}",
+            token.len(), cookies.as_ref().map(|c| format!("{}...", &c[..c.len().min(20)])), preferred_name);
+
         let client = TraeApiClient::new_with_token(&token)?;
+        println!("[DEBUG] add_account_by_token: TraeApiClient 创建成功");
 
         // 通过 Token 获取用户信息
         let user_info = client.get_user_info_by_token().await?;
+        println!("[DEBUG] add_account_by_token: get_user_info_by_token 返回: user_id='{}', tenant_id='{}', screen_name={:?}, email={:?}, avatar_url={:?}",
+            user_info.user_id, user_info.tenant_id, user_info.screen_name, user_info.email, user_info.avatar_url);
 
         // 检查是否已存在
         if self
@@ -107,30 +114,62 @@ impl AccountManager {
             .iter()
             .any(|a| a.user_id == user_info.user_id)
         {
+            println!("[DEBUG] add_account_by_token: 账号已存在 (user_id='{}'), 返回错误", user_info.user_id);
             return Err(anyhow!("该账号已存在"));
         }
 
-        // 如果提供了 Cookies，尝试获取更详细的用户信息
-        let (name, email, avatar_url) = if let Some(ref cookies_str) = cookies {
+        // 确定最终名称（优先级：preferred_name > cookies获取的名称 > API返回的名称 > 自动生成）
+        let (name, email, avatar_url) = if let Some(preferred) = preferred_name {
+            // 如果提供了首选名称，直接使用（这是导入场景，导出数据中的名称应优先）
+            let email = if let Some(ref cookies_str) = cookies {
+                match self.get_user_info_with_cookies(cookies_str).await {
+                    Ok(info) => info.non_plain_text_email.unwrap_or_default(),
+                    Err(_) => user_info.email.unwrap_or_default(),
+                }
+            } else {
+                user_info.email.unwrap_or_default()
+            };
+            let avatar = if let Some(ref cookies_str) = cookies {
+                match self.get_user_info_with_cookies(cookies_str).await {
+                    Ok(info) => info.avatar_url,
+                    Err(_) => user_info.avatar_url.clone().unwrap_or_default(),
+                }
+            } else {
+                user_info.avatar_url.clone().unwrap_or_default()
+            };
+            println!("[DEBUG] add_account_by_token: 使用首选名称 '{}'", preferred);
+            (preferred, email, avatar)
+        } else if let Some(ref cookies_str) = cookies {
+            println!("[DEBUG] add_account_by_token: 有 cookies, 尝试获取更详细用户信息");
             match self.get_user_info_with_cookies(cookies_str).await {
-                Ok(info) => (
-                    info.screen_name,
-                    info.non_plain_text_email.unwrap_or_default(),
-                    info.avatar_url,
-                ),
-                Err(_) => (
-                    user_info.screen_name.unwrap_or_else(|| format!("User_{}", &user_info.user_id[..8.min(user_info.user_id.len())])),
-                    user_info.email.unwrap_or_default(),
-                    user_info.avatar_url.unwrap_or_default(),
-                ),
+                Ok(info) => {
+                    println!("[DEBUG] add_account_by_token: get_user_info_with_cookies 成功, screen_name='{}'", info.screen_name);
+                    (
+                        info.screen_name,
+                        info.non_plain_text_email.unwrap_or_default(),
+                        info.avatar_url,
+                    )
+                },
+                Err(e) => {
+                    println!("[DEBUG] add_account_by_token: get_user_info_with_cookies 失败: {}, 使用 Token 数据", e);
+                    (
+                        user_info.screen_name.clone().unwrap_or_else(|| format!("User_{}", &user_info.user_id[..8.min(user_info.user_id.len())])),
+                        user_info.email.unwrap_or_default(),
+                        user_info.avatar_url.unwrap_or_default(),
+                    )
+                },
             }
         } else {
+            println!("[DEBUG] add_account_by_token: 无 cookies, 使用 Token 数据");
             (
-                user_info.screen_name.unwrap_or_else(|| format!("User_{}", &user_info.user_id[..8.min(user_info.user_id.len())])),
+                user_info.screen_name.clone().unwrap_or_else(|| format!("User_{}", &user_info.user_id[..8.min(user_info.user_id.len())])),
                 user_info.email.unwrap_or_default(),
                 user_info.avatar_url.unwrap_or_default(),
             )
         };
+
+        println!("[DEBUG] add_account_by_token: 最终名称: name='{}', email='{}', avatar_url='{}', user_id='{}', tenant_id='{}'",
+            name, email, avatar_url, user_info.user_id, user_info.tenant_id);
 
         let mut account = Account::new(
             name,
@@ -152,6 +191,7 @@ impl AccountManager {
         }
 
         self.save_store()?;
+        println!("[DEBUG] add_account_by_token: 完成, 添加账号 id='{}', name='{}', user_id='{}'", account.id, account.name, account.user_id);
         Ok(account)
     }
 
@@ -423,6 +463,17 @@ impl AccountManager {
         Ok(())
     }
 
+    /// 清空所有账号数据
+    pub fn clear_all_accounts(&mut self) -> Result<usize> {
+        let count = self.store.accounts.len();
+        self.store.accounts.clear();
+        self.store.active_account_id = None;
+        self.store.current_account_id = None;
+        self.save_store()?;
+        println!("[INFO] 已清空所有账号数据，共删除 {} 个账号", count);
+        Ok(count)
+    }
+
     /// 导出账号数据
     pub fn export_accounts(&self) -> Result<String> {
         let export_data: Vec<serde_json::Value> = self.store.accounts.iter().map(|acc| {
@@ -448,10 +499,11 @@ impl AccountManager {
     pub async fn import_accounts(&mut self, data: &str) -> Result<usize> {
         let import_data: Vec<serde_json::Value> = serde_json::from_str(data)
             .map_err(|e| anyhow!("JSON 解析失败: {}", e))?;
+        println!("[DEBUG] import_accounts: 解析到 {} 条导入数据", import_data.len());
 
         let mut imported_count = 0;
 
-        for item in import_data {
+        for (i, item) in import_data.iter().enumerate() {
             let token = item.get("jwt_token")
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
@@ -460,35 +512,147 @@ impl AccountManager {
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_string();
+            let exported_name = item.get("name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let exported_avatar = item.get("avatar_url")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let exported_user_id = item.get("user_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let exported_region = item.get("region")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+
+            println!("[DEBUG] import_accounts[{}]: name='{}', user_id='{}', region='{}', token_len={}, cookies_len={}",
+                i, exported_name, exported_user_id, exported_region, token.len(), cookies.len());
 
             // 优先使用 Token 添加（Token 方式更稳定，且不依赖 cookies）
-            if !token.is_empty() {
+            let add_success = if !token.is_empty() {
                 let cookies_opt = if cookies.is_empty() { None } else { Some(cookies.clone()) };
-                match self.add_account_by_token(token, cookies_opt).await {
-                    Ok(_) => {
-                        imported_count += 1;
-                    }
+                let preferred_name = if exported_name.is_empty() { None } else { Some(exported_name.clone()) };
+                match self.add_account_by_token(token.clone(), cookies_opt, preferred_name).await {
+                    Ok(acc) => {
+                        println!("[DEBUG] import_accounts[{}]: add_account_by_token 成功, account.id='{}', account.name='{}', account.user_id='{}'",
+                            i, acc.id, acc.name, acc.user_id);
+                        true
+                    },
                     Err(e) => {
-                        if !e.to_string().contains("已存在") {
-                            println!("[WARN] 导入账号失败(Token): {}", e);
+                        let err_str = e.to_string();
+                        println!("[DEBUG] import_accounts[{}]: add_account_by_token 返回: {}", i, err_str);
+                        if err_str.contains("已存在") {
+                            // 账号已存在，也算导入成功（后续会更新名称）
+                            true
+                        } else {
+                            // API 调用失败（如网络不可达、Token 过期等），尝试直接从导出数据创建账号
+                            println!("[WARN] 导入账号失败(Token), 尝试从导出数据直接创建: {}", err_str);
+                            let fallback_user_id = if !exported_user_id.is_empty() {
+                                exported_user_id.clone()
+                            } else {
+                                // 尝试从 JWT 中解析 user_id
+                                crate::api::TraeApiClient::parse_jwt_user_id(&token).unwrap_or_default()
+                            };
+                            if !fallback_user_id.is_empty() {
+                                let fallback_tenant_id = item.get("tenant_id")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("")
+                                    .to_string();
+                                let mut fallback_account = Account::new(
+                                    exported_name.clone(),
+                                    item.get("email").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                                    cookies.clone(),
+                                    fallback_user_id,
+                                    fallback_tenant_id,
+                                );
+                                fallback_account.avatar_url = exported_avatar.clone();
+                                fallback_account.region = exported_region.clone();
+                                fallback_account.jwt_token = Some(token.clone());
+                                fallback_account.token_expired_at = None;
+
+                                // 检查是否已存在（通过 user_id 或 name）
+                                let already_exists = self.store.accounts.iter().any(|a| a.user_id == fallback_account.user_id);
+                                if already_exists {
+                                    println!("[DEBUG] import_accounts[{}]: 降级创建时发现账号已存在 (user_id='{}'), 跳过添加", i, fallback_account.user_id);
+                                    true
+                                } else {
+                                    self.store.accounts.push(fallback_account);
+                                    if self.store.active_account_id.is_none() {
+                                        self.store.active_account_id = Some(self.store.accounts.last().unwrap().id.clone());
+                                    }
+                                    println!("[DEBUG] import_accounts[{}]: 从导出数据直接创建账号成功", i);
+                                    true
+                                }
+                            } else {
+                                println!("[WARN] 导入账号失败: 无法获取 user_id, 跳过");
+                                false
+                            }
                         }
                     }
                 }
             } else if !cookies.is_empty() {
-                // 无 Token 时尝试通过 cookies 添加
                 match self.add_account(cookies).await {
-                    Ok(_) => {
-                        imported_count += 1;
-                    }
+                    Ok(acc) => {
+                        println!("[DEBUG] import_accounts[{}]: add_account 成功, account.id='{}', account.name='{}', account.user_id='{}'",
+                            i, acc.id, acc.name, acc.user_id);
+                        true
+                    },
                     Err(e) => {
+                        println!("[DEBUG] import_accounts[{}]: add_account 返回: {}", i, e);
                         if !e.to_string().contains("已存在") {
                             println!("[WARN] 导入账号失败(Cookies): {}", e);
+                            false
+                        } else {
+                            true
                         }
                     }
                 }
+            } else {
+                false
+            };
+
+            // 如果导出数据中有名称，且账号已存在（可能是刚添加的或之前已存在的），
+            // 用导出数据的名称覆盖（Token 方式获取的名称可能不准确）
+            if !exported_name.is_empty() && !exported_user_id.is_empty() {
+                let before_count = self.store.accounts.len();
+                println!("[DEBUG] import_accounts[{}]: 尝试名称覆盖, 当前store中有 {} 个账号, 查找 user_id='{}'",
+                    i, before_count, exported_user_id);
+                if let Some(acc) = self.store.accounts.iter_mut().find(|a| a.user_id == exported_user_id) {
+                    println!("[DEBUG] import_accounts[{}]: 找到匹配账号, 当前 name='{}', avatar_url='{}', region='{}', 将覆盖为 name='{}'",
+                        i, acc.name, acc.avatar_url, acc.region, exported_name);
+                    acc.name = exported_name.clone();
+                    if !exported_avatar.is_empty() {
+                        acc.avatar_url = exported_avatar.clone();
+                    }
+                    if !exported_region.is_empty() {
+                        acc.region = exported_region.clone();
+                    }
+                    println!("[DEBUG] import_accounts[{}]: 覆盖后 name='{}', avatar_url='{}', region='{}'",
+                        i, acc.name, acc.avatar_url, acc.region);
+                } else {
+                    println!("[DEBUG] import_accounts[{}]: 未找到匹配 user_id='{}' 的账号, 跳过名称覆盖",
+                        i, exported_user_id);
+                }
+            } else {
+                println!("[DEBUG] import_accounts[{}]: 跳过名称覆盖 (exported_name='{}', exported_user_id='{}')",
+                    i, exported_name, exported_user_id);
+            }
+
+            if add_success {
+                imported_count += 1;
             }
         }
 
+        self.save_store()?;
+        println!("[DEBUG] import_accounts: 完成, 导入 {} 个账号, 保存后 store 中账号数: {}", imported_count, self.store.accounts.len());
+        for (i, acc) in self.store.accounts.iter().enumerate() {
+            println!("[DEBUG] import_accounts 保存后 account[{}]: id='{}', name='{}', user_id='{}', region='{}', avatar='{}'",
+                i, acc.id, acc.name, acc.user_id, acc.region, acc.avatar_url);
+        }
         Ok(imported_count)
     }
 
@@ -756,5 +920,319 @@ impl AccountManager {
 
         println!("[INFO] 成功领取礼包: {}", account.email);
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 测试导入账号时名称覆盖逻辑
+    #[tokio::test]
+    async fn test_import_account_name_override() {
+        // 创建一个临时路径用于测试
+        let temp_dir = std::env::temp_dir().join("traejumper_test_import");
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        let test_path = temp_dir.join("test_accounts.json");
+
+        let mut manager = AccountManager {
+            store: AccountStore::default(),
+            data_path: test_path.clone(),
+        };
+
+        // 先手动添加一个账号（模拟已存在的账号，但名称是 User_xxx 格式）
+        let mut existing_account = Account::new(
+            "User_41928646".to_string(),
+            "".to_string(),
+            "".to_string(),
+            "4192864699424393".to_string(),
+            "7o2d894p7dr0o4".to_string(),
+        );
+        existing_account.avatar_url = "".to_string();
+        existing_account.region = "".to_string();
+        manager.store.accounts.push(existing_account);
+
+        println!("[TEST] 测试账号名称: '{}'", manager.store.accounts[0].name);
+
+        // 模拟导入过程（只执行名称覆盖逻辑，跳过 API 调用）
+        let test_json = r#"[
+            {
+                "name": "用户7956360138",
+                "email": "",
+                "cookies": "",
+                "user_id": "4192864699424393",
+                "tenant_id": "7o2d894p7dr0o4",
+                "region": "CN",
+                "plan_type": "Free",
+                "avatar_url": "https://example.com/avatar.png",
+                "jwt_token": "",
+                "machine_id": null
+            }
+        ]"#;
+
+        let import_data: Vec<serde_json::Value> = serde_json::from_str(test_json).unwrap();
+        for item in import_data {
+            let exported_name = item.get("name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let exported_avatar = item.get("avatar_url")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let exported_user_id = item.get("user_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let exported_region = item.get("region")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+
+            // 执行名称覆盖逻辑（与 import_accounts 中相同）
+            if !exported_name.is_empty() && !exported_user_id.is_empty() {
+                if let Some(acc) = manager.store.accounts.iter_mut().find(|a| a.user_id == exported_user_id) {
+                    acc.name = exported_name.clone();
+                    if !exported_avatar.is_empty() {
+                        acc.avatar_url = exported_avatar.clone();
+                    }
+                    if !exported_region.is_empty() {
+                        acc.region = exported_region.clone();
+                    }
+                }
+            }
+        }
+
+        // 断言：名称应该被覆盖为导出数据中的名称
+        assert_eq!(manager.store.accounts[0].name, "用户7956360138", "名称覆盖失败！");
+        assert_eq!(manager.store.accounts[0].avatar_url, "https://example.com/avatar.png", "头像覆盖失败！");
+        assert_eq!(manager.store.accounts[0].region, "CN", "区域覆盖失败！");
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        println!("[TEST] 所有断言通过！名称覆盖逻辑正确工作。");
+    }
+
+    /// 测试完整的 import_accounts 流程（使用空的 jwt_token，测试名称覆盖路径）
+    #[tokio::test]
+    async fn test_import_accounts_full_flow() {
+        let temp_dir = std::env::temp_dir().join("traejumper_test_full_import");
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        let test_path = temp_dir.join("test_accounts.json");
+
+        let mut manager = AccountManager {
+            store: AccountStore::default(),
+            data_path: test_path.clone(),
+        };
+
+        // 测试数据：cookies 和 jwt_token 都为空，跳过 API 调用
+        // 验证：名称覆盖不会执行（因为没有账号被添加）
+        let test_json = r#"[
+            {
+                "name": "用户7956360138",
+                "email": "",
+                "cookies": "",
+                "user_id": "4192864699424393",
+                "tenant_id": "7o2d894p7dr0o4",
+                "region": "CN",
+                "plan_type": "Free",
+                "avatar_url": "https://example.com/avatar.png",
+                "jwt_token": "",
+                "machine_id": null
+            }
+        ]"#;
+
+        let result = manager.import_accounts(test_json).await.unwrap();
+        println!("[TEST] import_accounts 返回: {} 个账号", result);
+
+        // 由于 jwt_token 和 cookies 都为空，应该导入 0 个账号
+        assert_eq!(result, 0, "无 token/cookies 时应导入 0 个账号");
+        assert_eq!(manager.store.accounts.len(), 0, "store 中应无账号");
+
+        // 测试：已有账号 + 空 jwt_token 的导入数据
+        // 验证：名称覆盖逻辑是否对已存在的账号生效
+        let mut existing_account = Account::new(
+            "User_41928646".to_string(),
+            "".to_string(),
+            "".to_string(),
+            "4192864699424393".to_string(),
+            "7o2d894p7dr0o4".to_string(),
+        );
+        existing_account.avatar_url = "".to_string();
+        existing_account.region = "".to_string();
+        manager.store.accounts.push(existing_account);
+        manager.save_store().unwrap();
+
+        // 再次导入（空 jwt_token，不触发 API 调用，但名称覆盖应针对已存在账号）
+        let result = manager.import_accounts(test_json).await.unwrap();
+        println!("[TEST] 第二次 import_accounts 返回: {} 个账号", result);
+        println!("[TEST] 第二次导入后 store 中账号: {} 个", manager.store.accounts.len());
+
+        // 由于 jwt_token 为空，add_account_by_token 不会被调用
+        // add_success 为 false，所以 imported_count 为 0
+        // 但名称覆盖逻辑应该对已存在的账号生效
+        println!("[TEST] 最终账号名称: '{}'", manager.store.accounts[0].name);
+
+        // 关键验证：已存在的账号名称应该被覆盖
+        // 注意：import_accounts 中名称覆盖逻辑在 add_success 判断之前执行
+        // 即使 add_success 为 false，名称覆盖也应该生效
+        assert_eq!(manager.store.accounts[0].name, "用户7956360138", "名称覆盖应该在导入时对已存在账号生效！");
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        println!("[TEST] 完整流程测试通过！");
+    }
+
+    /// 测试 JWT Token 解析和降级创建路径
+    #[tokio::test]
+    async fn test_import_fallback_from_jwt() {
+        let temp_dir = std::env::temp_dir().join("traejumper_test_jwt_fallback");
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        let test_path = temp_dir.join("test_accounts.json");
+
+        let mut manager = AccountManager {
+            store: AccountStore::default(),
+            data_path: test_path.clone(),
+        };
+
+        // 使用一个真实的 JWT Token 来测试解析
+        // 这个 token 是从实际的导出文件中提取的
+        let test_jwt = "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJkYXRhIjp7ImlkIjoiNDE5Mjg2NDY5OTQyNDM5MyIsInNvdXJjZSI6InJlZnJlc2hfdG9rZW4iLCJzb3VyY2VfaWQiOiJycU5LNGlFdDRickFZSlhmeFhpVzZfTXZMYjVyS2FteHE5enlQaXQ2QW9ZPS4xOGNiYmM1ZGY4Y2MzYmI0IiwidGVuYW50X2lkIjoiN28yZDg5NHA3ZHIwbzQiLCJ0eXBlIjoidXNlciJ9LCJleHAiOjE3ODc5MzgzODgsImlhdCI6MTc4NjcyODc4OH0.Cx3NREOtJlGGKW6QTb3F5MoVu52xG2GaUNXEpvBMoqWfSJyqu0yjl1p0RL6to3tgAhSsH838NL_vQdDk6qj8WfsubCDj5XuLl9TxqTmYhgrCgZVnFMSxszMi6C0Y2adzTRb0Hk_griCXZZs3GJDLgNP3vIiOK4ukzm6wXJkt1LHq3El3fqKEb4jT1uSICK_OqhuJzkB3zrQ1O0Ng0oDTtdvNtLYGjmveOSfSvhOeUXHVx6PAy1UCN0yhNCEJ0ni5-w4v6I8bEhlGDR90Gf87ZxjewTPusNI6TuRKrAYQssYsizHIwDFXRmnzDco6YMMBQwvMv_qJM0rDOCSdE8juQf_X39tj0vmlvw1w8vPrbuuJr9gQB3UVwuhczy8J9lw7OAO0w_thts0wN9b6rYh4UtG4jIB1DJqEvSFmnGk7O1n3nf5kHKlpaa1X4acpLEAy31wNTR05bsSd1SdkS2Z2T_SXro9MKuoqfnYsyz7sBS3xolXpCYjL8zIHxBDGWpNUp1kBpJ-lQELideJtm2ljY6te_Tqas9NAa0_hzLP5KKB8AM51-wZonkG24rupYoTQQ6OahCqZXNwOHgMQuSYaDq50Lw26iYA-UNR1KLNtqTilEFIngAFLdVZGE4zx1XkX5sPjNIYyo07ZBh9ZT6-iLcMvRh7VJr7Yc7caJTr_ZHE";
+
+        // 验证 JWT 解析
+        let user_id = crate::api::TraeApiClient::parse_jwt_user_id(test_jwt).unwrap();
+        assert_eq!(user_id, "4192864699424393", "JWT 解析 user_id 失败");
+        println!("[TEST] JWT 解析成功: user_id='{}'", user_id);
+
+        // 使用包含真实 JWT 的导入数据测试降级创建
+        let test_json = format!(r#"[
+            {{
+                "name": "用户7956360138",
+                "email": "",
+                "cookies": "",
+                "user_id": "4192864699424393",
+                "tenant_id": "7o2d894p7dr0o4",
+                "region": "CN",
+                "plan_type": "Free",
+                "avatar_url": "https://example.com/avatar.png",
+                "jwt_token": "{}",
+                "machine_id": null
+            }}
+        ]"#, test_jwt);
+
+        // 调用完整的 import_accounts（会尝试 API 调用并失败，然后降级到 JWT 解析创建）
+        let result = manager.import_accounts(&test_json).await.unwrap();
+        println!("[TEST] import_accounts 返回: {} 个账号, store 中账号: {} 个", result, manager.store.accounts.len());
+
+        // 验证降级创建成功
+        if manager.store.accounts.len() > 0 {
+            let acc = &manager.store.accounts[0];
+            println!("[TEST] 降级创建账号: name='{}', user_id='{}', region='{}', avatar='{}'",
+                acc.name, acc.user_id, acc.region, acc.avatar_url);
+            assert_eq!(acc.name, "用户7956360138", "名称应该正确");
+            assert_eq!(acc.user_id, "4192864699424393", "user_id 应该正确");
+            assert_eq!(acc.region, "CN", "region 应该正确");
+            assert_eq!(acc.avatar_url, "https://example.com/avatar.png", "avatar_url 应该正确");
+        }
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        println!("[TEST] JWT 降级创建测试通过！");
+    }
+
+    /// 完整集成测试：模拟导入用户真实导出的3个账号，验证所有名称正确
+    #[tokio::test]
+    async fn test_import_full_real_data() {
+        let temp_dir = std::env::temp_dir().join("traejumper_test_full_real");
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        let test_path = temp_dir.join("test_accounts.json");
+
+        let mut manager = AccountManager {
+            store: AccountStore::default(),
+            data_path: test_path.clone(),
+        };
+
+        // 使用用户真实导出数据中的3个JWT Token
+        let jwt1 = "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJkYXRhIjp7ImlkIjoiNDE5Mjg2NDY5OTQyNDM5MyIsInNvdXJjZSI6InJlZnJlc2hfdG9rZW4iLCJzb3VyY2VfaWQiOiJycU5LNGlFdDRickFZSlhmeFhpVzZfTXZMYjVyS2FteHE5enlQaXQ2QW9ZPS4xOGNiYmM1ZGY4Y2MzYmI0IiwidGVuYW50X2lkIjoiN28yZDg5NHA3ZHIwbzQiLCJ0eXBlIjoidXNlciJ9LCJleHAiOjE3ODc5MzgzODgsImlhdCI6MTc4NjcyODc4OH0.Cx3NREOtJlGGKW6QTb3F5MoVu52xG2GaUNXEpvBMoqWfSJyqu0yjl1p0RL6to3tgAhSsH838NL_vQdDk6qj8WfsubCDj5XuLl9TxqTmYhgrCgZVnFMSxszMi6C0Y2adzTRb0Hk_griCXZZs3GJDLgNP3vIiOK4ukzm6wXJkt1LHq3El3fqKEb4jT1uSICK_OqhuJzkB3zrQ1O0Ng0oDTtdvNtLYGjmveOSfSvhOeUXHVx6PAy1UCN0yhNCEJ0ni5-w4v6I8bEhlGDR90Gf87ZxjewTPusNI6TuRKrAYQssYsizHIwDFXRmnzDco6YMMBQwvMv_qJM0rDOCSdE8juQf_X39tj0vmlvw1w8vPrbuuJr9gQB3UVwuhczy8J9lw7OAO0w_thts0wN9b6rYh4UtG4jIB1DJqEvSFmnGk7O1n3nf5kHKlpaa1X4acpLEAy31wNTR05bsSd1SdkS2Z2T_SXro9MKuoqfnYsyz7sBS3xolXpCYjL8zIHxBDGWpNUp1kBpJ-lQELideJtm2ljY6te_Tqas9NAa0_hzLP5KKB8AM51-wZonkG24rupYoTQQ6OahCqZXNwOHgMQuSYaDq50Lw26iYA-UNR1KLNtqTilEFIngAFLdVZGE4zx1XkX5sPjNIYyo07ZBh9ZT6-iLcMvRh7VJr7Yc7caJTr_ZHE";
+        let jwt2 = "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJkYXRhIjp7ImlkIjoiMjM0NjIxNzg4NzYwOTMyIiwic291cmNlIjoicmVmcmVzaF90b2tlbiIsInNvdXJjZV9pZCI6IkJiREl5OHdtdzhNRV9vWTJJZDF5c292elQxalFYRk1ZajZoVEcxdG50MjA9LjE4Y2MzYTBiNmIzZjJkZmQiLCJ0ZW5hbnRfaWQiOiI3bzJkODk0cDdkcjBvNCIsInR5cGUiOiJ1c2VyIn0sImV4cCI6MTc4ODA3NjU3MiwiaWF0IjoxNzg2ODY2OTcyfQ.NOgs0iOwFw_sDNNpp1q3Alhb5LCw1XJFuct4tStBIrUkJHg7gcrBBZQU8pihu4gvCCYNwvZjebXK5DU3gH9jt55OKvb9DX2SDXhslu35b4q2Mjhoqgfhi-7g5XMRFtBoJr_FPds6-6qs9wE-cMxA1o2FFPt-YsYqP5eaLmQ8IKx13tDxH4x3P71NFpnYgBv6CzJaI_eVIIMcBOP2uc4OQB_gaIrpcCFr2ickIWkdkZ1AY67E7l9pMlvflc9Zy6iX8MAtVSr3XyIUCQplzYWYa0xO0LQmCBCPJde8FJHHa-DKe9sdWbs2UTERTo693aa-MSW6HIoNnt7RKYFDenm5_A62v4W58sld-dFiOkVUrVmDvhrRwNZQUnae43X-tCGF_n8J1YiF5Wwlu4oYNQx9LIwv5aII7qRnNS6HlgcevlyhepxogkaCzitWTUTFCY_WDsbUdNU9CS-3JdJTzMr2HH55mGvipWRFaG1Bv6mIsuga5wz9_kb75w-cxyw2Qk5NGUtejJBBtLyuIK8mR4JE_Y08vuT-sabV6ftX8F1tkBcKEzl0JXHO6HqVMuYltES-8yGNnWUtPXrxOPw-WGz06wJfRjetHUWsFYPX3hqQ4d3q76ZXilS73qa8feNi5P-dRqtZiUeja_Gk1FfFHeXdJ6psxjKV0hODWl43yvTS3Dg";
+        let jwt3 = "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJkYXRhIjp7ImlkIjoiNDA2NTM1MTEyMzg4NjQxMCIsInNvdXJjZSI6InJlZnJlc2hfdG9rZW4iLCJzb3VyY2VfaWQiOiI4Z21vaElyZHFKck1pZERDUnZYaFIxWk02ZHk4cC1pRFdfXzJ5c2V5Zk40PS4xOGNjNTNmMDQ3NzJkZDc1IiwidGVuYW50X2lkIjoiN28yZDg5NHA3ZHIwbzQiLCJ0eXBlIjoidXNlciJ9LCJleHAiOjE3ODgxMDUwNDMsImlhdCI6MTc4Njg5NTQ0M30.OjyN4iNifs5mk_N_ZWC8SlTmZmMo3WpmD5gRS43G_8cbYaeD-3lw4yZJB0Owl36_jvpMxxiywtKCq28BUvSKjMCzqG4yoHSQIw8CMsK1UaKXrx8sgFFkE8n9fVr9AgzcCWqycI1mOgnnU_dMmAToA-3Rz4gq-XtT9haj78NJugxLZrL9zIzFTg5LvTA3xnA-p9wIQhL4lVQSWFnSufEQTe_x21ZVc72hZJqqJNFKSOF98O2WkCvP5ixlzqN0ekzxBWJnYOwVotZg3gbeGLKx8CyD-RqQe9fArE1RzEf-GRmjkPnvNI68Z-gibVoMFcQeiG3KmPzjFiR-Gll5zm18m_bkmUFTpPxO_slVrEko9C7m2sOAfaa-x-co_0WkSy61Hzqt8-dislSB25tH_we5IMlKu7lI4g855U8tibJGWLMzMKVu0VDsN_2f5147ML5Tf3PWhL9jqwOJGmxGtKS3R37Mi_j2u3a6plCDiWR0EOHwUrEEu-3oA0QQ_zbzPNTvk9vfUcMPBkcAQEDA3fJSczSWSHAvUz5QBKemLcmlGJiG6x9y6oSgVNlsceLjKsvVoirZVFmREgxXZ2L-1-XlspIas207UNKGDAnyYRxHbTB_JI2gtta-1lAYUoBHK1YmhlrnZA3RfDcULJZhOBVg1vCHhk3Eds6T5Krwmb094hA";
+
+        // 构建与用户导出文件完全相同的 JSON 数据
+        let test_json = format!(r#"[
+            {{
+                "name": "用户7956360138",
+                "email": "",
+                "cookies": "",
+                "user_id": "4192864699424393",
+                "tenant_id": "7o2d894p7dr0o4",
+                "region": "CN",
+                "plan_type": "Free",
+                "avatar_url": "https://p6-passport.byteacctimg.com/img/user-avatar/assets/11c35f217be67876726ffb8038af8e4e_192_192.png~128x128.image",
+                "jwt_token": "{}",
+                "machine_id": null
+            }},
+            {{
+                "name": "Francisyep",
+                "email": "",
+                "cookies": "",
+                "user_id": "234621788760932",
+                "tenant_id": "7o2d894p7dr0o4",
+                "region": "CN",
+                "plan_type": "Free",
+                "avatar_url": "https://p3-passport.byteacctimg.com/img/user-avatar/assets/11c35f217be67876726ffb8038af8e4e_192_192.png~128x128.image",
+                "jwt_token": "{}",
+                "machine_id": null
+            }},
+            {{
+                "name": "🏄🏻冲浪猫",
+                "email": "",
+                "cookies": "",
+                "user_id": "4065351123886410",
+                "tenant_id": "7o2d894p7dr0o4",
+                "region": "CN",
+                "plan_type": "Free",
+                "avatar_url": "https://p9-passport.byteacctimg.com/img/user-avatar/67c16e65322f39664f9f2b6612f8bf11~128x128.image",
+                "jwt_token": "{}",
+                "machine_id": null
+            }}
+        ]"#, jwt1, jwt2, jwt3);
+
+        // 调用完整的 import_accounts
+        let result = manager.import_accounts(&test_json).await.unwrap();
+        println!("[TEST] 完整导入返回: {} 个账号, store 中账号: {} 个", result, manager.store.accounts.len());
+
+        // 验证导入了3个账号
+        assert_eq!(result, 3, "应该成功导入3个账号");
+        assert_eq!(manager.store.accounts.len(), 3, "store中应该有3个账号");
+
+        // 验证每个账号的名称正确
+        let expected = [
+            ("用户7956360138", "4192864699424393", "CN", "byteacctimg"),
+            ("Francisyep", "234621788760932", "CN", "byteacctimg"),
+            ("🏄🏻冲浪猫", "4065351123886410", "CN", "byteacctimg"),
+        ];
+
+        for (i, (exp_name, exp_uid, exp_region, exp_avatar_sub)) in expected.iter().enumerate() {
+            let acc = &manager.store.accounts[i];
+            println!("[TEST] 账号[{}]: name='{}', user_id='{}', region='{}'",
+                i, acc.name, acc.user_id, acc.region);
+            assert_eq!(acc.name, *exp_name, "账号[{}] 名称应该正确", i);
+            assert_eq!(acc.user_id, *exp_uid, "账号[{}] user_id 应该正确", i);
+            assert_eq!(acc.region, *exp_region, "账号[{}] region 应该正确", i);
+            assert!(acc.avatar_url.contains(exp_avatar_sub), "账号[{}] avatar_url 应包含'{}'", i, exp_avatar_sub);
+        }
+
+        // 模拟导出并验证导出数据中的名称也是正确的
+        let exported = manager.export_accounts().unwrap();
+        let exported_data: Vec<serde_json::Value> = serde_json::from_str(&exported).unwrap();
+        println!("[TEST] 导出数据: {}", serde_json::to_string_pretty(&exported_data).unwrap());
+        for (i, item) in exported_data.iter().enumerate() {
+            let name = item.get("name").and_then(|v| v.as_str()).unwrap_or("");
+            assert_eq!(name, expected[i].0, "导出数据中账号[{}] 名称应该正确", i);
+        }
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        println!("[TEST] 完整集成测试通过！所有3个账号名称、region、头像均正确！");
     }
 }

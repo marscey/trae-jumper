@@ -7,9 +7,10 @@ interface SettingsProps {
   onToast?: (type: "success" | "error" | "warning" | "info", message: string) => void;
   onExport?: () => void;
   onImport?: () => void;
+  onClearData?: () => void;
 }
 
-export function Settings({ onToast, onExport, onImport }: SettingsProps) {
+export function Settings({ onToast, onExport, onImport, onClearData }: SettingsProps) {
   const [traeApps, setTraeApps] = useState<TraeAppInfo[]>([]);
   const [switchingApp, setSwitchingApp] = useState(false);
   const [traeMachineId, setTraeMachineId] = useState<string>("");
@@ -366,7 +367,7 @@ export function Settings({ onToast, onExport, onImport }: SettingsProps) {
             <div className="setting-label">清空数据</div>
             <div className="setting-desc">删除所有账号数据（不可恢复）</div>
           </div>
-          <button className="setting-btn danger">清空</button>
+          <button className="setting-btn danger" onClick={onClearData}>清空</button>
         </div>
       </div>
     </div>

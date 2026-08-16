@@ -264,6 +264,12 @@ impl TraeApiClient {
         })
     }
 
+    /// 公共静态方法：从 JWT Token 中解析 user_id（用于导入降级场景）
+    pub fn parse_jwt_user_id(token: &str) -> Result<String> {
+        let payload = Self::parse_jwt_token(token)?;
+        Ok(payload.user_id)
+    }
+
     /// 构建请求头
     fn build_headers(&self, with_auth: bool) -> Result<header::HeaderMap> {
         let mut headers = header::HeaderMap::new();
