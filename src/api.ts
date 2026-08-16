@@ -1,5 +1,17 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { Account, AccountBrief, UsageSummary, UsageEventsResponse } from "./types";
+import type { Account, AccountBrief, UsageSummary, UsageEventsResponse, TraeAppInfo } from "./types";
+
+// ============ 应用变体相关 API ============
+
+// 获取支持的 Trae 应用列表（含安装状态与当前选择）
+export async function getTraeApps(): Promise<TraeAppInfo[]> {
+  return invoke("get_trae_apps");
+}
+
+// 切换当前管理的目标应用（Trae CN / TRAE SOLO CN / 国际版）
+export async function setCurrentTraeApp(appKey: string): Promise<void> {
+  return invoke("set_current_trae_app", { appKey });
+}
 
 // 添加账号（通过 Cookies）
 export async function addAccount(cookies: string): Promise<Account> {

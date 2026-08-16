@@ -1,19 +1,19 @@
 [package]
-name = "trae-auto"
-version = "0.1.0"
-description = "Trae Account Manager - 管理 Trae 订阅账号使用量"
-authors = ["sauce"]
+name = "trae-jumper"
+version = "1.0.0"
+description = "TraeJumper - 轻松管理 Trae 账号的小工具"
+authors = ["marscey"]
 edition = "2021"
 
 [lib]
-name = "trae_auto_lib"
+name = "trae_jumper_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = [] }
+tauri = { version = "2", features = ["tray-icon", "image-png"] }
 tauri-plugin-opener = "2"
 tauri-plugin-deep-link = "2"
 serde = { version = "1", features = ["derive"] }
@@ -29,11 +29,14 @@ warp = "0.3"
 once_cell = "1"
 open = "5"
 uuid = { version = "1", features = ["v4"] }
-tauri-plugin-dialog = "2.6.0"
+tauri-plugin-dialog = "2"
+sha2 = "0.10"
+aes = "0.8"
+cbc = { version = "0.1", features = ["alloc"] }
+rand = "0.8"
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.52"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 core-foundation = "0.10"
-

@@ -1,15 +1,15 @@
-# 🚀 Trae Account Manager
+# 🚀 TraeJumper
 
 <div align="center">
 
-![Trae Account Manager](https://img.shields.io/badge/Trae-Account%20Manager-blue?style=for-the-badge)
+![TraeJumper](https://img.shields.io/badge/TraeJumper-blue?style=for-the-badge)
 ![Version](https://img.shields.io/badge/version-1.0.0-green?style=for-the-badge)
-![Platform](https://img.shields.io/badge/platform-Windows-lightgrey?style=for-the-badge)
+![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS-lightgrey?style=for-the-badge)
 ![License](https://img.shields.io/badge/license-MIT-orange?style=for-the-badge)
 
-**一款强大的 Trae IDE 多账号管理工具**
+**Trae CN / TRAE WORK / 国际版 Trae 多账号管理小工具**
 
-[功能特性](#-功能特性) • [快速开始](#-快速开始) • [使用指南](#-使用指南) • [常见问题](#-常见问题) • [贡献指南](#-贡献指南)
+[功能特性](#-功能特性) • [快速开始](#-快速开始) • [使用指南](#-使用指南) • [常见问题](#-常见问题)
 
 </div>
 
@@ -30,16 +30,27 @@
 
 ## 📖 项目简介
 
-Trae Account Manager 是一款专为 Trae IDE 用户打造的多账号管理工具。通过本工具，你可以轻松管理多个 Trae 账号，一键切换账号，实时查看使用量，让你的 Trae IDE 使用体验更加便捷高效！
+TraeJumper 是一款专为 Trae 系列 IDE 用户打造的多账号管理小工具。通过本工具，你可以轻松管理多个 Trae 账号，一键切换账号，实时查看使用量，让你的 Trae IDE 使用体验更加便捷高效！
 
-### 🎯 为什么选择 Trae Account Manager？
+### 支持的 Trae 应用
 
-- 🔄 **一键切换账号** - 自动关闭 Trae IDE，切换账号后自动重新打开
+| 应用 | 标识 | 说明 |
+|------|------|------|
+| **Trae CN（国内版）** | `trae-cn` | 字节跳动国内版 AI IDE |
+| **TRAE WORK** | `trae-work` | 原 TRAE SOLO CN，2026年6月更名，AI 办公平台 |
+| **Trae（国际版）** | `trae` | 海外版 Trae IDE |
+
+> 可在设置页随时切换目标应用，切换后机器码、路径、登录站点、API 端点自动跟随变更。
+
+### 🎯 为什么选择 TraeJumper？
+
+- 🔄 **一键切换账号** - 自动关闭 Trae，切换账号后自动重新打开
 - 📊 **实时使用量监控** - 随时查看每个账号的 Token 使用情况
-- 🎨 **现代化界面** - 简洁美观的用户界面，操作流畅
+- 🎨 **现代化界面** - 简洁美观的卡片式布局，流畅动画
 - 🔒 **安全可靠** - 本地存储，数据安全有保障
 - ⚡ **高效便捷** - 支持批量导入导出，快速管理多个账号
 - 🛠️ **功能丰富** - 机器码管理、使用记录查询、账号详情查看
+- 🖥️ **跨平台** - 支持 Windows 和 macOS
 
 ---
 
@@ -73,16 +84,16 @@ Trae Account Manager 是一款专为 Trae IDE 用户打造的多账号管理工�
 ### 🎭 账号管理
 
 - ✅ **添加账号**
-  - 支持通过 Token 添加账号
+  - 支持通过 Token 添加账号（支持国内版/国际版）
   - 自动获取账号信息（邮箱、用户名、头像等）
   - 自动绑定机器码
 
 - ✅ **账号切换**
   - 一键切换到指定账号
-  - 自动关闭 Trae IDE
-  - 清除旧登录状态
+  - 自动关闭 Trae 客户端
+  - 清除旧登录状态（自动识别加密/明文存储）
   - 写入新账号信息
-  - 自动重新打开 Trae IDE
+  - 自动重新打开 Trae 客户端
   - 切换前弹出确认对话框
 
 - ✅ **账号信息**
@@ -114,11 +125,11 @@ Trae Account Manager 是一款专为 Trae IDE 用户打造的多账号管理工�
 
 ### 🔧 机器码管理
 
-- ✅ **Trae IDE 机器码**
-  - 查看当前 Trae IDE 机器码
+- ✅ **Trae 机器码**
+  - 查看当前 Trae 机器码
   - 复制机器码到剪贴板
   - 刷新机器码
-  - 清除 Trae IDE 登录状态
+  - 清除 Trae 登录状态
   - 重置机器码
 
 - ✅ **账号机器码绑定**
@@ -128,11 +139,16 @@ Trae Account Manager 是一款专为 Trae IDE 用户打造的多账号管理工�
 
 ### ⚙️ 系统设置
 
-- ✅ **Trae IDE 路径配置**
-  - 自动扫描 Trae IDE 安装路径
-  - 手动选择 Trae.exe 文件
+- ✅ **目标应用切换**
+  - 支持 Trae CN / TRAE WORK / 国际版 Trae 三选一
+  - 切换后机器码、路径、登录站点、API 端点自动变更
+  - 显示各应用的安装状态和数据目录
+
+- ✅ **Trae 路径配置**
+  - 自动扫描 Trae 安装路径（支持多路径候选）
+  - 手动选择应用文件
   - 保存路径配置
-  - 切换账号后自动打开 Trae IDE
+  - 切换账号后自动打开 Trae
 
 - ✅ **数据管理**
   - 导出所有账号数据为 JSON
@@ -151,6 +167,7 @@ Trae Account Manager 是一款专为 Trae IDE 用户打造的多账号管理工�
   - 确认对话框
   - 加载状态提示
   - 右键菜单
+  - 系统托盘（关闭窗口后隐藏到托盘，左键点击恢复，右键菜单退出）
 
 ---
 
@@ -158,23 +175,25 @@ Trae Account Manager 是一款专为 Trae IDE 用户打造的多账号管理工�
 
 ### 📋 系统要求
 
-- Windows 10/11
-- Trae IDE 已安装
-- Node.js 16+ (开发环境)
+- **Windows** 10/11
+- **macOS** 10.15+
+- Trae IDEWork 已安装（任一变体）
+- Node.js 18+ (开发环境)
+- Rust 工具链 (开发环境)
 
 ### 📥 下载安装
 
-1. 前往 [Releases](https://github.com/Yang-505/Trae-Account-Manager/releases) 页面
+1. 前往 [Releases](https://github.com/marscey/trae-jumper/releases) 页面
 2. 下载最新版本的安装包
 3. 运行安装程序
-4. 启动 Trae Account Manager
+4. 启动 TraeJumper
 
 ### 🔨 从源码构建
 
 ```bash
 # 克隆仓库
-git clone https://github.com/Yang-505/Trae-Account-Manager.git
-cd Trae-Account-Manager
+git clone https://github.com/marscey/trae-jumper.git
+cd trae-jumper
 
 # 安装依赖
 npm install
@@ -182,56 +201,83 @@ npm install
 # 开发模式运行
 npm run tauri dev
 
-# 构建生产版本
+# 构建生产版本（macOS 自动生成 .dmg）
 npm run tauri build
 ```
+
+> 构建产物目录：`src-tauri/target/release/bundle/`
+> - **macOS**: `.dmg` 安装包（`bundle/dmg/`） + `.app`（`bundle/macos/`）
+> - **Windows**: `.msi` 安装包 + `.exe`（`bundle/msi/`）
+
+### 📦 构建 DMG 安装包
+
+macOS 下运行 `npm run tauri build` 后，Tauri 会自动生成 `.dmg` 文件：
+
+```bash
+npm run tauri build  # 构建完整发布包
+
+# 产物路径：
+# src-tauri/target/release/bundle/dmg/TraeJumper_1.0.0_aarch64.dmg
+```
+
+**构建前注意事项：**
+1. 确保已安装 Rust 工具链和 Xcode Command Line Tools
+2. 首次构建会下载依赖，耗时较长
+3. 构建的 `.dmg` 可直接分发，用户拖拽到 Applications 即可安装
+4. 如需修改应用版本号，编辑 `src-tauri/tauri.conf.json` 中的 `version` 字段
 
 ---
 
 ## 📚 使用指南
 
-### 1️⃣ 首次使用
+### 1️⃣ 选择目标应用
 
-#### 配置 Trae IDE 路径
+首次使用，请先进入 **设置** 页面，在 **目标应用** 区块选择你要管理的 Trae 客户端：
+
+- 系统会自动检测已安装的应用
+- 当前选中项会高亮显示
+- 切换后机器码、路径、登录站点、API 端点自动跟随变更
+
+### 2️⃣ 配置 Trae 路径
 
 1. 打开应用后，点击左侧菜单的 **设置**
-2. 在 "Trae IDE 路径" 部分：
-   - 点击 **自动扫描** 按钮，系统会自动查找 Trae IDE
-   - 或点击 **手动设置** 按钮，选择 `Trae.exe` 文件位置
+2. 在 **客户端路径** 部分：
+   - 点击 **自动扫描** 按钮，系统会自动查找 Trae 应用
+   - 或点击 **手动设置** 按钮，选择应用文件
 3. 路径配置成功后会显示完整路径
 
-### 2️⃣ 添加账号
+### 3️⃣ 添加账号
 
 #### 方法一：通过 Token 添加
 
 1. 点击右上角的 **添加账号** 按钮
-2. 输入你的 Trae IDE Token
+2. 输入你的 Trae Token
 3. 点击 **添加** 按钮
 4. 系统会自动获取账号信息并保存
 
 #### 获取 Token 的方法
 
-1. 打开 Trae IDE
+1. 打开 Trae
 2. 按 `F12` 打开开发者工具
 3. 切换到 `Application` 标签
 4. 在左侧找到 `Local Storage` → `vscode-webview://xxx`
 5. 找到包含 `iCubeAuthInfo` 的键
 6. 复制其中的 `token` 值
 
-### 3️⃣ 切换账号
+### 4️⃣ 切换账号
 
 1. 在账号列表中找到要切换的账号
 2. 点击账号卡片上的 **切换** 按钮
 3. 在确认对话框中点击 **确定**
 4. 系统会自动：
-   - 关闭当前运行的 Trae IDE
+   - 关闭当前运行的 Trae
    - 清除旧账号的登录状态
    - 写入新账号的登录信息
-   - 重新打开 Trae IDE
+   - 重新打开 Trae
 
-> ⚠️ **注意**：切换账号前请保存 Trae IDE 中的工作内容
+> ⚠️ **注意**：切换账号前请保存 Trae 中的工作内容
 
-### 4️⃣ 查看使用量
+### 5️⃣ 查看使用量
 
 #### 查看概览
 
@@ -251,12 +297,12 @@ npm run tauri build
    - 使用的模型
    - 请求类型
 
-### 5️⃣ 管理机器码
+### 6️⃣ 管理机器码
 
-#### 查看 Trae IDE 机器码
+#### 查看 Trae 机器码
 
 1. 进入 **设置** 页面
-2. 在 "Trae IDE 机器码" 部分可以看到当前机器码
+2. 在 **机器码** 部分可以看到当前机器码
 3. 点击 **复制** 按钮可以复制到剪贴板
 
 #### 清除登录状态
@@ -264,57 +310,76 @@ npm run tauri build
 1. 在设置页面点击 **清除登录状态** 按钮
 2. 确认操作
 3. 系统会：
-   - 重置 Trae IDE 机器码
+   - 重置 Trae 机器码
    - 清除所有登录信息
    - 删除本地缓存数据
 
-> ⚠️ **注意**：清除登录状态后，Trae IDE 将变成全新安装状态，需要重新登录
+> ⚠️ **注意**：清除登录状态后，Trae 将变成全新安装状态，需要重新登录
 
-### 6️⃣ 数据导入导出
+### 7️⃣ 数据导入导出
 
 #### 导出账号数据
 
 1. 进入 **设置** 页面
-2. 在 "数据管理" 部分点击 **导出** 按钮
+2. 在 **数据管理** 部分点击 **导出** 按钮
 3. 选择保存位置
 4. 所有账号数据将导出为 JSON 文件
 
 #### 导入账号数据
 
 1. 进入 **设置** 页面
-2. 在 "数据管理" 部分点击 **导入** 按钮
+2. 在 **数据管理** 部分点击 **导入** 按钮
 3. 选择之前导出的 JSON 文件
 4. 账号数据将被导入到应用中
 
 ---
 
-## 🎯 使用场景
+## 🔧 本仓库改进（Fork 版）
 
-### 场景一：多账号轮换使用
+本仓库基于 [Yang-505/Trae-Account-Manager](https://github.com/Yang-505/Trae-Account-Manager) fork，主要改进如下：
 
-如果你有多个 Trae 账号，可以通过本工具快速切换，充分利用每个账号的额度。
+### 1. 多应用变体支持
+- **新增 `trae_app.rs`**：定义 Trae 应用变体系统（Trae CN / TRAE WORK / 国际版），各变体独立管理数据目录、安装路径、进程名、登录站点、API Host
+- **前端应用选择器**：设置页新增"目标应用"区块，支持随时切换管理目标
+- 旧标识 `trae-solo-cn` 自动兼容映射到 `trae-work`
 
-### 场景二：团队协作
+### 2. macOS 适配
+- 进程检测/关闭使用 `pgrep`/`pkill`/`osascript` 替代 Windows `taskkill`
+- 数据目录从 `APPDATA` 改为 `~/Library/Application Support`
+- 安装路径扫描支持 `.app` bundle 格式
+- 多路径候选机制（`bundle_paths` / `process_patterns` / `osascript_names`）
 
-团队成员可以导出自己的账号配置，分享给其他成员，快速配置开发环境。
+### 3. 加密存储支持
+- **新增 `crypto.rs`**：从 Trae CN 客户端 `byteCrypto.js` 逆向实现 AES-128-CBC + SHA-512 校验加解密
+- 加密格式：`base64( "tc\x05\x10\x00\x00" + randomKey(32B) + AES-128-CBC(SHA512(plain) + plain) )`
+- 密钥派生：SHA512(randomKey) + 常量盐 -> SHA512 -> AES key + IV
+- 兼容旧版明文存储格式，自动检测加密/非加密值
 
-### 场景三：账号使用量监控
+### 4. 登录流程优化
+- 登录 URL 根据当前变体动态选择（`www.trae.cn` / `www.trae.ai`）
+- API 端点根据变体自动设置（`api.trae.cn` / `api-sg-central.trae.ai`）
+- Origin/Referer 头随变体变化
 
-实时监控每个账号的使用情况，合理分配使用额度，避免超额。
+### 5. TRAE WORK 专属适配
+- 确认 TRAE WORK = 原 TRAE SOLO CN（2026-06 更名）
+- 兼容新旧安装名（`TRAE SOLO CN.app` / `TraeWork.app`）与数据目录
+- 从 SOLO 的 `main.js` 逆向验证加密算法与 Trae CN 完全一致，`crypto.rs` 共用
 
-### 场景四：测试不同账号
-
-开发者可以快速切换不同账号，测试不同权限下的功能表现。
+### 6. 系统托盘（System Tray）支持
+- 关闭窗口时隐藏到系统托盘，不退出应用
+- 左键点击托盘图标恢复窗口
+- 右键托盘菜单：显示窗口 / 退出
+- 登录窗口不受影响，可正常关闭
 
 ---
 
 ## ❓ 常见问题
 
-### Q1: 切换账号后 Trae IDE 没有自动打开？
+### Q1: 切换账号后 Trae 没有自动打开？
 
 **A:** 请检查以下几点：
-1. 确认已在设置中配置了正确的 Trae IDE 路径
-2. 确认 Trae.exe 文件存在且可执行
+1. 确认已在设置中配置了正确的 Trae 路径
+2. 确认应用文件存在且可执行
 3. 查看应用日志，确认是否有错误信息
 
 ### Q2: 添加账号时提示 Token 无效？
@@ -324,10 +389,10 @@ npm run tauri build
 2. Token 是否已过期
 3. 网络连接是否正常
 
-### Q3: 切换账号后 Trae IDE 还是显示旧账号？
+### Q3: 切换账号后 Trae 还是显示旧账号？
 
 **A:** 这种情况很少见，可以尝试：
-1. 手动关闭 Trae IDE
+1. 手动关闭 Trae
 2. 在设置中点击"清除登录状态"
 3. 重新切换账号
 
@@ -342,15 +407,38 @@ npm run tauri build
 ### Q5: 应用数据存储在哪里？
 
 **A:**
-- Windows: `%APPDATA%\com.sauce.trae-auto\`
+- Windows: `%APPDATA%\com.marscey.traejumper\`
+- macOS: `~/Library/Application Support/com.marscey.traejumper/`
 - 包含账号信息、配置等数据
 
-### Q6: 支持 macOS 吗？
+### Q6: Trae 国内版和国际版有什么区别？
 
 **A:**
-目前仅支持 Windows 平台。macOS 版本正在开发中，敬请期待！
+- **国内版**：登录 `www.trae.cn`，API `api.trae.cn`，使用豆包/DeepSeek 等国产模型
+- **国际版**：登录 `www.trae.ai`，API `api-sg-central.trae.ai`，使用 Claude/GPT 等模型
+- 数据目录名不同（`Trae CN` vs `Trae`），storage.json 加密格式一致
 
-> 注：Trae IDE 官方支持 Windows 和 macOS，但不支持 Linux。
+### Q7: macOS 安装后提示「已损坏，无法打开」或「无法验证开发者」？
+
+**A:** 这不是安装包真的损坏，而是 macOS 的 **Gatekeeper 安全机制**在拦截。TraeJumper 是开源免费应用，没有购买 Apple 开发者账号（$99/年）做签名公证，从网络下载的未签名应用会被系统打上"隔离"标记并阻止运行。
+
+解决方法（任选其一）：
+
+**方法一：终端命令移除隔离标记（推荐）**
+
+```bash
+sudo xattr -rd com.apple.quarantine /Applications/TraeJumper.app
+```
+
+执行后输入开机密码，再重新打开应用即可。
+
+**方法二：系统设置放行（macOS 13+）**
+
+1. 双击打开应用被拦截后，进入「系统设置 → 隐私与安全性」
+2. 滚动到底部，找到关于 "TraeJumper" 已被阻止的提示
+3. 点击「仍要打开」→「打开」
+
+> 💡 安全性说明：本应用代码完全开源（本仓库），可自行审查或从源码构建（`npm run tauri build`），不存在的安全风险。旧版 macOS（12 及以下）可直接在弹窗上「右键 → 打开」绕过。
 
 ---
 
@@ -370,50 +458,57 @@ npm run tauri build
 - **Tokio** - 异步运行时
 - **Reqwest** - HTTP 客户端
 - **Serde** - 序列化/反序列化
+- **AES-128-CBC + SHA-512** - 存储值加密
+- **rand** - 加密随机数生成
 
 ### 功能模块
 
 - **账号管理** - 多账号存储与切换
-- **API 客户端** - Trae API 交互
-- **机器码管理** - Windows 注册表操作
-- **文件系统** - Trae IDE 配置文件操作
-- **进程管理** - Trae IDE 进程控制
+- **API 客户端** - Trae API 交互（多端点容灾）
+- **机器码管理** - 系统注册表/文件操作
+- **文件系统** - Trae 配置文件操作
+- **进程管理** - Trae 进程控制
+- **应用变体管理** - 多 Trae 变体支持
+- **加密解密** - storage.json 加密值读写
 
 ---
 
 ## 📁 项目结构
 
 ```
-Trae-Account-Manager/
+trae-jumper/
 ├── src/                      # 前端源码
-│   ├── components/          # React 组件
-│   │   ├── AccountCard.tsx      # 账号卡片
-│   │   ├── AddAccountModal.tsx  # 添加账号弹窗
-│   │   ├── ConfirmModal.tsx     # 确认对话框
-│   │   ├── DetailModal.tsx      # 详情弹窗
+│   ├── components/           # React 组件
+│   │   ├── AccountCard.tsx       # 账号卡片
+│   │   ├── AddAccountModal.tsx   # 添加账号弹窗
+│   │   ├── ConfirmModal.tsx      # 确认对话框
+│   │   ├── DetailModal.tsx       # 详情弹窗
 │   │   └── ...
-│   ├── pages/               # 页面组件
-│   │   ├── Dashboard.tsx        # 仪表板
-│   │   ├── Settings.tsx         # 设置页面
-│   │   └── About.tsx            # 关于页面
-│   ├── api.ts               # API 接口
-│   ├── types/               # TypeScript 类型定义
-│   └── App.tsx              # 主应用组件
-├── src-tauri/               # Tauri 后端
+│   ├── pages/                # 页面组件
+│   │   ├── Dashboard.tsx         # 仪表板
+│   │   ├── Settings.tsx          # 设置页面（含目标应用选择器）
+│   │   └── About.tsx             # 关于页面
+│   ├── api.ts                # API 接口（含 app 变体 API）
+│   ├── types/                # TypeScript 类型定义
+│   └── App.tsx               # 主应用组件
+├── src-tauri/                # Tauri 后端
 │   ├── src/
-│   │   ├── account/         # 账号管理模块
-│   │   │   ├── account_manager.rs  # 账号管理器
+│   │   ├── account/          # 账号管理模块
+│   │   │   ├── account_manager.rs  # 账号管理器（支持加密存储解密）
 │   │   │   └── types.rs            # 账号类型定义
-│   │   ├── api/             # API 客户端模块
-│   │   │   ├── trae_api.rs         # Trae API 客户端
+│   │   ├── api/              # API 客户端模块
+│   │   │   ├── trae_api.rs         # Trae API 客户端（多端点容灾）
 │   │   │   └── types.rs            # API 类型定义
-│   │   ├── machine.rs       # 机器码管理
-│   │   ├── lib.rs           # Tauri 命令注册
-│   │   └── main.rs          # 应用入口
-│   ├── Cargo.toml           # Rust 依赖配置
-│   └── tauri.conf.json      # Tauri 配置
-├── package.json             # Node.js 依赖配置
-└── README.md                # 项目文档
+│   │   ├── crypto.rs         # 加密解密模块（AES-128-CBC + SHA-512）
+│   │   ├── trae_app.rs       # 应用变体管理（Trae CN / WORK / 国际版）
+│   │   ├── machine.rs        # 机器码管理（跨平台）
+│   │   ├── login.rs          # 浏览器登录
+│   │   ├── lib.rs            # Tauri 命令注册
+│   │   └── main.rs           # 应用入口
+│   ├── Cargo.toml            # Rust 依赖配置
+│   └── tauri.conf.json       # Tauri 配置
+├── package.json              # Node.js 依赖配置
+└── README.md                 # 项目文档
 ```
 
 ---
@@ -432,30 +527,7 @@ Trae-Account-Manager/
 
 ### 报告问题
 
-如果你发现了 Bug 或有功能建议，请：
-
-1. 前往 [Issues](https://github.com/Yang-505/Trae-Account-Manager/issues) 页面
-2. 点击 "New Issue"
-3. 选择合适的模板
-4. 详细描述问题或建议
-
----
-
-## 📝 开发计划
-
-### 🎯 近期计划
-
-- [ ] 支持账号分组管理
-- [ ] 添加账号使用统计图表
-- [ ] 支持自] 添加账号备注功能
-- [ ] 支持主题切换（暗色/亮色）
-
-### 🚀 远期计划
-
-- [ ] 支持 macOS 平台
-- [ ] 添加账号使用提醒
-- [ ] 支持多语言（英文、日文等）
-- [ ] 添加账号使用报表导出
+如果你发现了 Bug 或有功能建议，请前往 [Issues](https://github.com/marscey/trae-jumper/issues) 页面提交。
 
 ---
 
@@ -473,13 +545,14 @@ Trae-Account-Manager/
 - [Tauri](https://tauri.app/) - 优秀的桌面应用框架
 - [React](https://react.dev/) - 强大的 UI 框架
 - [Rust](https://www.rust-lang.org/) - 安全高效的系统编程语言
+- [Yang-505/Trae-Account-Manager](https://github.com/Yang-505/Trae-Account-Manager) - 原项目
 
 ---
 
 ## 📞 联系方式
 
-- GitHub: [@Yang-505](https://github.com/Yang-505)
-- Issues: [项目 Issues](https://github.com/Yang-505/Trae-Account-Manager/issues)
+- GitHub: [@marscey](https://github.com/marscey)
+- Issues: [项目 Issues](https://github.com/marscey/trae-jumper/issues)
 
 ---
 
@@ -489,16 +562,14 @@ Trae-Account-Manager/
 
 **如果觉得这个项目不错，请给个 Star 支持一下！**
 
-**你的 Star持续更新的动力！💪**
+**你的 Star 是持续更新的动力！💪**
 
-Made with ❤️ by Yang-505
+Made with ❤️
 
 </div>
 
 ---
 
 ## 🎉 Star 历史
-
-## Star History
 
 [![Star History Chart](https://api.star-history.com/svg?repos=Yang-505/Trae-Account-Manager&type=date&legend=top-left)](https://www.star-history.com/#Yang-505/Trae-Account-Manager&type=date&legend=top-left)

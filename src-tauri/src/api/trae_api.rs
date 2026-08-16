@@ -8,6 +8,7 @@ use super::types::*;
 const API_BASE_US: &str = "https://api-us-east.trae.ai";
 const API_BASE_SG: &str = "https://api-sg-central.trae.ai";
 const API_BASE_UG: &str = "https://ug-normal.trae.ai";
+const API_BASE_CN: &str = "https://api.trae.cn";
 
 /// Trae API 客户端
 pub struct TraeApiClient {
@@ -47,8 +48,12 @@ impl TraeApiClient {
         let client = Client::builder()
             .build()?;
 
-        // 从 Token 中解析区域信息，默认尝试多个端点
-        let api_base = API_BASE_SG.to_string(); // 默认使用新加坡，因为大多数亚洲用户
+        // 国内版优先使用 api.trae.cn，国际版默认新加坡（请求失败时自动回退其他端点）
+        let api_base = if crate::trae_app::current().is_cn {
+            API_BASE_CN.to_string()
+        } else {
+            API_BASE_SG.to_string()
+        };
 
         Ok(Self {
             client,
@@ -71,7 +76,7 @@ impl TraeApiClient {
         }
     }
 
-    /// 尝试多个 API 端点获取数据
+    /// 尝试多个 API 端点获取数据（当前端点失败后按 CN → SG → US 回退）
     async fn try_api_endpoints<T, F, Fut>(&self, path: &str, request_fn: F) -> Result<T>
     where
         F: Fn(String) -> Fut,
@@ -79,20 +84,38 @@ impl TraeApiClient {
     {
         // 先尝试当前设置的端点
         let url = format!("{}{}", self.api_base, path);
-        match request_fn(url).await {
-            Ok(result) => return Ok(result),
-            Err(_) => {}
+        if let Ok(result) = request_fn(url).await {
+            return Ok(result);
         }
 
-        // 如果失败，尝试其他端点
-        let other_base = if self.api_base == API_BASE_SG {
-            API_BASE_US
+        // 依次回退其他端点（跳过与当前相同的）
+        let fallbacks = if self.api_base == API_BASE_CN {
+            [API_BASE_SG, API_BASE_US, API_BASE_UG]
         } else {
-            API_BASE_SG
+            [API_BASE_CN, API_BASE_SG, API_BASE_US]
         };
 
-        let url = format!("{}{}", other_base, path);
-        request_fn(url).await
+        let mut last_err = anyhow!("所有 API 端点均失败");
+        for base in fallbacks {
+            if *base == self.api_base {
+                continue;
+            }
+            let url = format!("{}{}", base, path);
+            match request_fn(url).await {
+                Ok(result) => return Ok(result),
+                Err(e) => last_err = e,
+            }
+        }
+        Err(last_err)
+    }
+
+    /// 当前站点 Origin/Referer（国内版 www.trae.cn，国际版 www.trae.ai）
+    fn web_origin(&self) -> &'static str {
+        if self.api_base == API_BASE_CN || crate::trae_app::current().is_cn {
+            "https://www.trae.cn"
+        } else {
+            "https://www.trae.ai"
+        }
     }
 
     /// 构建请求头（仅使用 Token，不需要 Cookies）
@@ -100,8 +123,9 @@ impl TraeApiClient {
         let mut headers = header::HeaderMap::new();
         headers.insert(header::CONTENT_TYPE, "application/json".parse()?);
         headers.insert(header::ACCEPT, "application/json, text/plain, */*".parse()?);
-        headers.insert(header::ORIGIN, "https://www.trae.ai".parse()?);
-        headers.insert(header::REFERER, "https://www.trae.ai/".parse()?);
+        let origin = self.web_origin();
+        headers.insert(header::ORIGIN, origin.parse()?);
+        headers.insert(header::REFERER, format!("{}/", origin).parse()?);
         headers.insert(
             header::USER_AGENT,
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36".parse()?,
@@ -123,9 +147,9 @@ impl TraeApiClient {
         let token = self.jwt_token.as_ref().ok_or_else(|| anyhow!("Token 不存在"))?;
         let jwt_data = Self::parse_jwt_token(token)?;
 
-        // 尝试多个 API 端点
+        // 尝试多个 API 端点（含国内 api.trae.cn）
         let headers = self.build_headers_token_only()?;
-        let endpoints = [&self.api_base, API_BASE_SG, API_BASE_US];
+        let endpoints = [&self.api_base, API_BASE_CN, API_BASE_SG, API_BASE_US];
 
         let mut last_error = anyhow!("所有 API 端点都失败");
 
@@ -176,25 +200,37 @@ impl TraeApiClient {
         Err(last_error)
     }
 
-    /// 尝试用 Token 调用 GetUserInfo 接口
+    /// 尝试用 Token 调用 GetUserInfo 接口（依次尝试 UG / CN 端点）
     async fn get_user_info_with_token(&self) -> Result<UserInfoResult> {
-        let url = format!("{}/cloudide/api/v3/trae/GetUserInfo", API_BASE_UG);
         let headers = self.build_headers_token_only()?;
+        let mut last_err = anyhow!("获取用户信息失败");
 
-        let response = self
-            .client
-            .post(&url)
-            .headers(headers)
-            .json(&json!({"IfWebPage": true}))
-            .send()
-            .await?;
+        for base in [API_BASE_UG, API_BASE_CN] {
+            let url = format!("{}/cloudide/api/v3/trae/GetUserInfo", base);
+            let response = self
+                .client
+                .post(&url)
+                .headers(headers.clone())
+                .json(&json!({"IfWebPage": true}))
+                .send()
+                .await;
 
-        if !response.status().is_success() {
-            return Err(anyhow!("获取用户信息失败: {}", response.status()));
+            match response {
+                Ok(resp) if resp.status().is_success() => {
+                    let data: GetUserInfoResponse = resp.json().await
+                        .map_err(|e| anyhow!("解析用户信息失败: {}", e))?;
+                    return Ok(data.result);
+                }
+                Ok(resp) => {
+                    last_err = anyhow!("获取用户信息失败: {}", resp.status());
+                }
+                Err(e) => {
+                    last_err = anyhow!("请求失败: {}", e);
+                }
+            }
         }
 
-        let data: GetUserInfoResponse = response.json().await?;
-        Ok(data.result)
+        Err(last_err)
     }
 
     /// 解析 JWT Token 获取用户信息
@@ -239,8 +275,9 @@ impl TraeApiClient {
             .map_err(|e| anyhow!("Cookie 格式错误: {}", e))?;
         headers.insert(header::COOKIE, cookie_value);
 
-        headers.insert(header::ORIGIN, "https://www.trae.ai".parse()?);
-        headers.insert(header::REFERER, "https://www.trae.ai/".parse()?);
+        let origin = self.web_origin();
+        headers.insert(header::ORIGIN, origin.parse()?);
+        headers.insert(header::REFERER, format!("{}/", origin).parse()?);
         headers.insert(
             header::USER_AGENT,
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36".parse()?,

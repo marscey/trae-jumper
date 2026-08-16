@@ -2,10 +2,21 @@ mod api;
 mod account;
 mod machine;
 mod login;
+mod crypto;
+mod trae_app;
 
+use std::fs;
+use std::io::Write;
+use std::path::PathBuf;
+use std::process::{self, Command};
 use std::sync::Arc;
 use tokio::sync::Mutex;
-use tauri::State;
+use tauri::{
+    Manager,
+    State,
+    menu::{Menu, MenuItem, PredefinedMenuItem},
+    tray::{TrayIconBuilder, TrayIconEvent, MouseButton, MouseButtonState},
+};
 
 use account::{AccountBrief, AccountManager, Account};
 use api::{UsageSummary, UsageQueryResponse};
@@ -209,11 +220,45 @@ async fn start_browser_login(app: tauri::AppHandle, state: State<'_, AppState>) 
     Ok(())
 }
 
+/// 获取支持的 Trae 应用列表（含安装状态与当前选择）
+#[tauri::command]
+async fn get_trae_apps() -> Result<Vec<trae_app::TraeAppInfo>> {
+    Ok(trae_app::list_app_infos())
+}
+
+/// 切换当前管理的目标应用（Trae CN / TRAE SOLO CN / 国际版）
+#[tauri::command]
+async fn set_current_trae_app(app_key: String) -> Result<()> {
+    let variant = trae_app::find_variant(&app_key).map_err(ApiError::from)?;
+    trae_app::set_current(variant).map_err(ApiError::from)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // ---- 单实例锁检测 ----
+    if let Some(existing_pid) = try_acquire_lock() {
+        println!("[INFO] 检测到已有 Trae Jumper 实例运行中 (PID: {}), 正在唤起...", existing_pid);
+        // macOS: 激活已有实例的窗口
+        #[cfg(target_os = "macos")]
+        {
+            let _ = Command::new("osascript")
+                .args(["-e", "tell application \"Trae Jumper\" to activate"])
+                .output();
+        }
+        // Windows: 通过 PowerShell 激活
+        #[cfg(target_os = "windows")]
+        {
+            let _ = Command::new("powershell")
+                .args(["-Command", "Add-Type '[DllImport(\"user32.dll\")]public static extern bool SetForegroundWindow(IntPtr hWnd);'; $proc = Get-Process -Name 'Trae Jumper' -ErrorAction SilentlyContinue; if ($proc) { [SetForegroundWindow]::Invoke($proc.MainWindowHandle) }"])
+                .output();
+        }
+        println!("[INFO] 已唤起已有实例, 当前实例退出");
+        return;
+    }
+
     let account_manager = AccountManager::new().expect("无法初始化账号管理器");
 
-    tauri::Builder::default()
+    let app = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .manage(AppState {
@@ -245,7 +290,173 @@ pub fn run() {
             refresh_token,
             refresh_all_tokens,
             start_browser_login,
+            get_trae_apps,
+            set_current_trae_app,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        // 关闭时隐藏到系统托盘，不退出
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                // 如果正在登录流程中，允许正常关闭登录窗口
+                if window.label() != "main" {
+                    return;
+                }
+                let _ = window.hide();
+                api.prevent_close();
+            }
+        })
+        // 创建系统托盘图标
+        .setup(|app| {
+            setup_system_tray(app)?;
+            Ok(())
+        })
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application");
+
+    // 运行主事件循环
+    app.run(|_app_handle, event| {
+        if let tauri::RunEvent::ExitRequested { .. } = event {
+            // 退出时释放单实例锁
+            release_lock();
+        }
+    });
+}
+
+// ============ 单实例锁 ============
+
+/// 获取锁文件路径
+fn lock_file_path() -> Option<PathBuf> {
+    let proj_dirs = directories::ProjectDirs::from("com", "marscey", "traejumper")?;
+    let data_dir = proj_dirs.data_dir();
+    let _ = fs::create_dir_all(data_dir);
+    Some(data_dir.join("app.lock"))
+}
+
+/// 尝试获取单实例锁
+/// 返回 Some(已有实例PID) 表示已有实例在运行，返回 None 表示当前实例获取了锁
+fn try_acquire_lock() -> Option<u32> {
+    let lock_path = lock_file_path()?;
+
+    // 检查是否存在锁文件
+    if lock_path.exists() {
+        // 读取已有 PID
+        if let Ok(content) = fs::read_to_string(&lock_path) {
+            if let Ok(existing_pid) = content.trim().parse::<u32>() {
+                // 检查进程是否还活着
+                if is_process_alive(existing_pid) {
+                    return Some(existing_pid);
+                }
+                // 进程已不存在，清理陈旧锁
+                let _ = fs::remove_file(&lock_path);
+            }
+        }
+        // 读取或解析失败，清理陈旧锁
+        let _ = fs::remove_file(&lock_path);
+    }
+
+    // 写入当前 PID
+    let mut file = match fs::File::create(&lock_path) {
+        Ok(f) => f,
+        Err(_) => return None,  // 无法创建锁文件，允许继续运行
+    };
+    let _ = write!(file, "{}", process::id());
+    None
+}
+
+/// 释放单实例锁
+fn release_lock() {
+    if let Some(lock_path) = lock_file_path() {
+        let _ = fs::remove_file(&lock_path);
+    }
+}
+
+/// 检查指定 PID 的进程是否存活
+fn is_process_alive(pid: u32) -> bool {
+    #[cfg(unix)]
+    {
+        // 通过 kill -0 检测进程是否存在（不实际发送信号）
+        let output = Command::new("kill")
+            .args(["-0", &pid.to_string()])
+            .output();
+        match output {
+            Ok(o) => o.status.success(),
+            Err(_) => false,
+        }
+    }
+    #[cfg(windows)]
+    {
+        // Windows: 通过 tasklist 检测
+        let output = Command::new("tasklist")
+            .args(["/FI", &format!("PID eq {}", pid)])
+            .output();
+        match output {
+            Ok(o) => {
+                let stdout = String::from_utf8_lossy(&o.stdout);
+                stdout.contains(&pid.to_string())
+            }
+            Err(_) => false,
+        }
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = pid;
+        false
+    }
+}
+
+// ============ 系统托盘 ============
+
+/// 创建系统托盘图标与菜单
+fn setup_system_tray(app: &tauri::App) -> std::result::Result<(), Box<dyn std::error::Error>> {
+    let show = MenuItem::with_id(app, "show", "显示窗口", true, None::<&str>)
+        .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
+    let quit = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)
+        .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
+    let sep = PredefinedMenuItem::separator(app)
+        .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
+    let menu = Menu::with_items(app, &[&show, &sep, &quit])
+        .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
+
+    // 使用应用图标作为托盘图标，优先取自配置，回退内嵌 32x32 PNG
+    let icon = app.default_window_icon().cloned().unwrap_or_else(|| {
+        tauri::image::Image::from_bytes(include_bytes!("../icons/32x32.png"))
+            .expect("无法加载托盘图标")
+    });
+
+    TrayIconBuilder::new()
+        .icon(icon)
+        .menu(&menu)
+        .tooltip("Trae Jumper")
+        // 左键单击显示窗口
+        .on_tray_icon_event(|tray, event| {
+            if let TrayIconEvent::Click {
+                button: MouseButton::Left,
+                button_state: MouseButtonState::Up,
+                ..
+            } = event
+            {
+                let app = tray.app_handle();
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.show();
+                    let _ = window.set_focus();
+                }
+            }
+        })
+        // 右键菜单事件
+        .on_menu_event(|app, event| {
+            match event.id.as_ref() {
+                "show" => {
+                    if let Some(window) = app.get_webview_window("main") {
+                        let _ = window.show();
+                        let _ = window.set_focus();
+                    }
+                }
+                "quit" => {
+                    app.exit(0);
+                }
+                _ => {}
+            }
+        })
+        .build(app)?;
+
+    Ok(())
 }

@@ -106,9 +106,9 @@ pub async fn start_login_flow(
                 // 大部分认证 cookies（如 sessionid, sid_guard 等）是 HttpOnly 的，无法通过 JS 访问
                 var cookies = document.cookie;
 
-                console.log("[Trae Auto] 捕获到 Token，长度:", token.length);
-                console.log("[Trae Auto] document.cookie 长度:", cookies.length);
-                console.log("[Trae Auto] 注意：HttpOnly cookies 无法通过 JS 获取");
+                console.log("[Trae Jumper] 捕获到 Token，长度:", token.length);
+                console.log("[Trae Jumper] document.cookie 长度:", cookies.length);
+                console.log("[Trae Jumper] 注意：HttpOnly cookies 无法通过 JS 获取");
 
                 var xhr = new XMLHttpRequest();
                 xhr.open("POST", __callbackUrl, true);
@@ -169,10 +169,12 @@ pub async fn start_login_flow(
     );
 
     // 不使用 incognito 模式，以便能访问所有 cookies
+    // 登录站点按当前目标应用变体选择（国内版 www.trae.cn，国际版 www.trae.ai）
+    let login_url = crate::trae_app::current().login_url;
     let window = WebviewWindowBuilder::new(
         &app,
         "trae-login",
-        WebviewUrl::External("https://www.trae.ai".parse().unwrap()),
+        WebviewUrl::External(login_url.parse().unwrap()),
     )
     .title("登录 Trae 账号")
     .inner_size(500.0, 700.0)

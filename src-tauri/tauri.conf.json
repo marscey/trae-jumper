@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Trae Auto",
-  "version": "0.1.0",
-  "identifier": "com.sauce.trae-auto",
+  "productName": "TraeJumper",
+  "version": "1.0.0",
+  "identifier": "com.marscey.traejumper",
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:1420",
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "Trae Auto - 账号管理",
+        "title": "TraeJumper",
         "width": 1000,
         "height": 700,
         "minWidth": 800,

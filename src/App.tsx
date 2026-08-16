@@ -662,13 +662,13 @@ function App() {
                 </button>
                 <button className="header-btn" onClick={handleShowImportInfo} title="导入账号">
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="16" height="16">
-                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12"/>
+                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/>
                   </svg>
                   导入
                 </button>
                 <button className="header-btn" onClick={handleShowExportInfo} title="导出账号" disabled={accounts.length === 0}>
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="16" height="16">
-                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/>
+                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12"/>
                   </svg>
                   导出
                 </button>
@@ -808,7 +808,7 @@ function App() {
                 <p>配置应用程序选项</p>
               </div>
             </header>
-            <Settings onToast={addToast} />
+            <Settings onToast={addToast} onExport={handleShowExportInfo} onImport={handleShowImportInfo} />
           </>
         )}
 

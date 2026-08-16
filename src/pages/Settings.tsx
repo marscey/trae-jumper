@@ -1,18 +1,48 @@
 import { useState, useEffect } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import * as api from "../api";
+import type { TraeAppInfo } from "../types";
 
 interface SettingsProps {
   onToast?: (type: "success" | "error" | "warning" | "info", message: string) => void;
+  onExport?: () => void;
+  onImport?: () => void;
 }
 
-export function Settings({ onToast }: SettingsProps) {
+export function Settings({ onToast, onExport, onImport }: SettingsProps) {
+  const [traeApps, setTraeApps] = useState<TraeAppInfo[]>([]);
+  const [switchingApp, setSwitchingApp] = useState(false);
   const [traeMachineId, setTraeMachineId] = useState<string>("");
   const [traeRefreshing, setTraeRefreshing] = useState(false);
   const [clearingTrae, setClearingTrae] = useState(false);
   const [traePath, setTraePath] = useState<string>("");
   const [traePathLoading, setTraePathLoading] = useState(false);
   const [scanning, setScanning] = useState(false);
+
+  // 加载应用列表
+  const loadTraeApps = async () => {
+    try {
+      const apps = await api.getTraeApps();
+      setTraeApps(apps);
+    } catch (err: any) {
+      console.error("获取 Trae 应用列表失败:", err);
+    }
+  };
+
+  // 切换目标应用
+  const handleSwitchApp = async (appKey: string) => {
+    if (switchingApp) return;
+    setSwitchingApp(true);
+    try {
+      await api.setCurrentTraeApp(appKey);
+      await Promise.all([loadTraeApps(), loadTraeMachineId(), loadTraePath()]);
+      onToast?.("success", "目标应用已切换");
+    } catch (err: any) {
+      onToast?.("error", err.message || "切换失败");
+    } finally {
+      setSwitchingApp(false);
+    }
+  };
 
   // 加载 Trae IDE 机器码
   const loadTraeMachineId = async () => {
@@ -43,6 +73,7 @@ export function Settings({ onToast }: SettingsProps) {
   };
 
   useEffect(() => {
+    loadTraeApps();
     loadTraeMachineId();
     loadTraePath();
   }, []);
@@ -114,6 +145,54 @@ export function Settings({ onToast }: SettingsProps) {
 
   return (
     <div className="settings-page">
+      {/* 目标应用 */}
+      <div className="settings-section">
+        <h3>目标应用</h3>
+        <div className="machine-id-card trae-card">
+          <div className="machine-id-header">
+            <div className="machine-id-icon trae-icon">
+              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <rect x="2" y="3" width="20" height="14" rx="2" ry="2"/>
+                <line x1="8" y1="21" x2="16" y2="21"/>
+                <line x1="12" y1="17" x2="12" y2="21"/>
+              </svg>
+            </div>
+            <div className="machine-id-title">
+              <span>选择要管理的客户端</span>
+              <span className="machine-id-subtitle">切换后机器码、路径、登录站点将随应用变化</span>
+            </div>
+          </div>
+          <div className="machine-id-actions" style={{ flexWrap: "wrap", gap: "8px" }}>
+            {traeApps.map((app) => (
+              <button
+                key={app.key}
+                className={`machine-id-btn${app.is_current ? " trae-app-current" : ""}`}
+                onClick={() => !app.is_current && handleSwitchApp(app.key)}
+                disabled={app.is_current || switchingApp}
+                title={app.installed ? app.data_dir : "未检测到安装"}
+                style={{
+                  opacity: app.installed ? 1 : 0.6,
+                  cursor: app.is_current ? "default" : "pointer",
+                }}
+              >
+                {app.is_current ? "✓ " : ""}
+                {app.display_name}
+                {!app.installed ? "（未安装）" : ""}
+              </button>
+            ))}
+            {traeApps.length === 0 && <span>加载中...</span>}
+          </div>
+          <div className="machine-id-tip">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <circle cx="12" cy="12" r="10"/>
+              <path d="M12 16v-4"/>
+              <path d="M12 8h.01"/>
+            </svg>
+            <span>切换目标应用后，账号切换、登录、机器码管理将作用于所选客户端。</span>
+          </div>
+        </div>
+      </div>
+
       {/* 机器码 */}
       <div className="settings-section">
         <h3>机器码</h3>
@@ -271,7 +350,7 @@ export function Settings({ onToast }: SettingsProps) {
             <div className="setting-label">导出数据</div>
             <div className="setting-desc">导出所有账号数据为 JSON 文件</div>
           </div>
-          <button className="setting-btn">导出</button>
+          <button className="setting-btn" onClick={onExport}>导出</button>
         </div>
 
         <div className="setting-item">
@@ -279,7 +358,7 @@ export function Settings({ onToast }: SettingsProps) {
             <div className="setting-label">导入数据</div>
             <div className="setting-desc">从 JSON 文件导入账号数据</div>
           </div>
-          <button className="setting-btn">导入</button>
+          <button className="setting-btn" onClick={onImport}>导入</button>
         </div>
 
         <div className="setting-item danger">

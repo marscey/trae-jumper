@@ -22,7 +22,7 @@ impl AccountManager {
 
     /// 获取数据存储路径
     fn get_data_path() -> Result<PathBuf> {
-        let proj_dirs = directories::ProjectDirs::from("com", "sauce", "trae-auto")
+        let proj_dirs = directories::ProjectDirs::from("com", "marscey", "traejumper")
             .ok_or_else(|| anyhow!("无法获取应用数据目录"))?;
 
         let data_dir = proj_dirs.data_dir();
@@ -452,24 +452,38 @@ impl AccountManager {
         let mut imported_count = 0;
 
         for item in import_data {
+            let token = item.get("jwt_token")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
             let cookies = item.get("cookies")
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_string();
 
-            if cookies.is_empty() {
-                continue;
-            }
-
-            // 尝试通过 cookies 添加账号
-            match self.add_account(cookies).await {
-                Ok(_) => {
-                    imported_count += 1;
+            // 优先使用 Token 添加（Token 方式更稳定，且不依赖 cookies）
+            if !token.is_empty() {
+                let cookies_opt = if cookies.is_empty() { None } else { Some(cookies.clone()) };
+                match self.add_account_by_token(token, cookies_opt).await {
+                    Ok(_) => {
+                        imported_count += 1;
+                    }
+                    Err(e) => {
+                        if !e.to_string().contains("已存在") {
+                            println!("[WARN] 导入账号失败(Token): {}", e);
+                        }
+                    }
                 }
-                Err(e) => {
-                    // 如果是"账号已存在"错误，跳过
-                    if !e.to_string().contains("已存在") {
-                        println!("[WARN] 导入账号失败: {}", e);
+            } else if !cookies.is_empty() {
+                // 无 Token 时尝试通过 cookies 添加
+                match self.add_account(cookies).await {
+                    Ok(_) => {
+                        imported_count += 1;
+                    }
+                    Err(e) => {
+                        if !e.to_string().contains("已存在") {
+                            println!("[WARN] 导入账号失败(Cookies): {}", e);
+                        }
                     }
                 }
             }
@@ -538,26 +552,12 @@ impl AccountManager {
         }
     }
 
-    /// 从 Trae IDE 读取当前登录账号
+    /// 从 Trae IDE 读取当前登录账号（支持当前目标应用变体 + 加密存储解密）
     pub async fn read_trae_ide_account(&mut self) -> Result<Option<Account>> {
-        // 获取 Trae IDE 配置文件路径（跨平台支持）
-        #[cfg(target_os = "windows")]
-        let trae_data_path = {
-            let appdata = std::env::var("APPDATA")
-                .map_err(|_| anyhow!("无法获取 APPDATA 环境变量"))?;
-            PathBuf::from(appdata).join("Trae")
-        };
-        
-        #[cfg(target_os = "macos")]
-        let trae_data_path = {
-            let home = std::env::var("HOME")
-                .map_err(|_| anyhow!("无法获取 HOME 环境变量"))?;
-            PathBuf::from(home)
-                .join("Library")
-                .join("Application Support")
-                .join("Trae")
-        };
-        
+        // 按当前目标应用变体获取数据目录（Trae CN / TRAE WORK / 国际版 Trae）
+        #[cfg(any(target_os = "windows", target_os = "macos"))]
+        let trae_data_path = crate::trae_app::data_dir_of(crate::trae_app::current());
+
         #[cfg(not(any(target_os = "windows", target_os = "macos")))]
         let trae_data_path: PathBuf = {
             return Err(anyhow!("此功能仅支持 Windows 和 macOS 系统"));
@@ -581,14 +581,16 @@ impl AccountManager {
         let storage: serde_json::Value = serde_json::from_str(&content)
             .map_err(|e| anyhow!("解析 Trae IDE 配置文件失败: {}", e))?;
 
-        // 获取 iCubeAuthInfo 字段
-        let auth_info_str = storage
+        // 获取 iCubeAuthInfo 字段（国内版为加密存储，需先解密；兼容旧版明文）
+        let auth_info_raw = storage
             .get("iCubeAuthInfo://icube.cloudide")
             .and_then(|v| v.as_str())
             .ok_or_else(|| anyhow!("未找到 Trae IDE 登录信息"))?;
 
+        let auth_info_str = crate::crypto::read_storage_value(auth_info_raw);
+
         // 解析嵌套的 JSON 字符串
-        let auth_info: serde_json::Value = serde_json::from_str(auth_info_str)
+        let auth_info: serde_json::Value = serde_json::from_str(&auth_info_str)
             .map_err(|e| anyhow!("解析 Trae IDE 认证信息失败: {}", e))?;
 
         // 提取账号信息
@@ -621,6 +623,14 @@ impl AccountManager {
         let username = auth_info
             .get("account")
             .and_then(|acc| acc.get("username"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+
+        // 提取区域信息（CN 账号后续切换时需使用 api.trae.cn）
+        let region = auth_info
+            .get("userRegion")
+            .and_then(|r| r.get("region"))
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .to_string();
@@ -658,6 +668,9 @@ impl AccountManager {
             avatar_url
         };
         account.jwt_token = Some(token);
+        if !region.is_empty() {
+            account.region = region;
+        }
 
         // 添加到账号列表
         self.store.accounts.push(account.clone());

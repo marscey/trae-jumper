@@ -20,7 +20,7 @@ export function Sidebar({ currentPage, onNavigate }: SidebarProps) {
         <div className="logo-icon">
           <img src={logoImage} alt="Logo" className="logo-image" />
         </div>
-        <span className="logo-text">Trae Account Manager</span>
+        <span className="logo-text">TraeJumper</span>
       </div>
 
       <nav className="sidebar-nav">

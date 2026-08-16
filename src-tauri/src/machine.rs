@@ -54,22 +54,19 @@ pub fn reset_machine_guid() -> Result<String> {
     Ok(new_guid)
 }
 
-/// 获取 Trae IDE 数据目录路径
-#[cfg(target_os = "windows")]
+/// 获取当前目标应用（Trae CN / TRAE WORK / 国际版）的数据目录路径
+#[cfg(any(target_os = "windows", target_os = "macos"))]
 fn get_trae_data_path() -> Result<PathBuf> {
-    let appdata = std::env::var("APPDATA")
-        .map_err(|_| anyhow!("无法获取 APPDATA 环境变量"))?;
-    Ok(PathBuf::from(appdata).join("Trae"))
-}
-
-#[cfg(target_os = "macos")]
-fn get_trae_data_path() -> Result<PathBuf> {
-    let home = std::env::var("HOME")
-        .map_err(|_| anyhow!("无法获取 HOME 环境变量"))?;
-    Ok(PathBuf::from(home)
-        .join("Library")
-        .join("Application Support")
-        .join("Trae"))
+    let variant = crate::trae_app::current();
+    let path = crate::trae_app::data_dir_of(variant);
+    if !path.exists() {
+        println!(
+            "[WARN] 数据目录不存在: {}（应用: {}）",
+            path.display(),
+            variant.display_name
+        );
+    }
+    Ok(path)
 }
 
 #[cfg(not(any(target_os = "windows", target_os = "macos")))]
@@ -121,12 +118,18 @@ pub fn is_trae_running() -> bool {
 
 #[cfg(target_os = "macos")]
 pub fn is_trae_running() -> bool {
-    // 使用 pgrep -f 匹配进程路径中包含 "Trae.app" 的进程
-    Command::new("pgrep")
-        .args(["-f", "Trae.app/Contents/MacOS"])
-        .output()
-        .map(|out| out.status.success())
-        .unwrap_or(false)
+    // 使用 pgrep -f 按当前目标应用的完整路径匹配（任一候选模式命中即视为运行中）
+    for pattern in crate::trae_app::current().process_patterns {
+        let running = Command::new("pgrep")
+            .args(["-f", pattern])
+            .output()
+            .map(|out| out.status.success())
+            .unwrap_or(false);
+        if running {
+            return true;
+        }
+    }
+    false
 }
 
 /// 关闭 Trae IDE 进程
@@ -176,23 +179,29 @@ pub fn kill_trae() -> Result<()> {
         return Ok(());
     }
 
-    println!("[INFO] 正在关闭 Trae IDE...");
+    let variant = crate::trae_app::current();
+    println!("[INFO] 正在关闭 {}...", variant.display_name);
 
-    // 使用 osascript 优雅关闭 Trae 应用
-    let _ = Command::new("osascript")
-        .args(["-e", "tell application \"Trae\" to quit"])
-        .output();
+    // 使用 osascript 优雅关闭 Trae 应用（逐个尝试变体名称候选）
+    for name in variant.osascript_names {
+        let quit_script = format!("tell application \"{}\" to quit", name);
+        let _ = Command::new("osascript")
+            .args(["-e", &quit_script])
+            .output();
+    }
 
     // 等待一小段时间
     std::thread::sleep(std::time::Duration::from_millis(1500));
 
-    // 如果还在运行，使用 pkill 强制关闭
+    // 如果还在运行，使用 pkill 强制关闭（逐个尝试变体路径模式）
     if is_trae_running() {
         println!("[INFO] 优雅关闭失败，正在强制关闭...");
-        let _ = Command::new("pkill")
-            .args(["-9", "-f", "Trae.app/Contents/MacOS"])
-            .output();
-        
+        for pattern in variant.process_patterns {
+            let _ = Command::new("pkill")
+                .args(["-9", "-f", pattern])
+                .output();
+        }
+
         // 再等待一下
         std::thread::sleep(std::time::Duration::from_millis(1000));
     }
@@ -217,7 +226,7 @@ pub fn kill_trae() -> Result<()> {
 
 /// 获取 Trae IDE 配置文件路径
 fn get_trae_config_path() -> Result<PathBuf> {
-    let proj_dirs = directories::ProjectDirs::from("com", "sauce", "trae-auto")
+    let proj_dirs = directories::ProjectDirs::from("com", "marscey", "traejumper")
         .ok_or_else(|| anyhow!("无法获取应用数据目录"))?;
     let config_dir = proj_dirs.config_dir();
     fs::create_dir_all(config_dir)?;
@@ -282,19 +291,23 @@ pub fn scan_trae_path() -> Result<String> {
 
 #[cfg(target_os = "macos")]
 pub fn scan_trae_path() -> Result<String> {
-    // 常见的 macOS 应用安装位置
-    let possible_paths = [
-        "/Applications/Trae.app",
-        &format!("{}/Applications/Trae.app", std::env::var("HOME").unwrap_or_default()),
-    ];
-    
-    for path in possible_paths {
-        if PathBuf::from(path).exists() {
-            return Ok(path.to_string());
+    // 按当前目标应用的 bundle 名称扫描常见安装位置
+    let variant = crate::trae_app::current();
+    for path in variant.bundle_paths {
+        let expanded = if let Some(rest) = path.strip_prefix("~/") {
+            PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(rest)
+        } else {
+            PathBuf::from(path)
+        };
+        if expanded.exists() {
+            return Ok(expanded.to_string_lossy().to_string());
         }
     }
-    
-    Err(anyhow!("未找到 Trae IDE，请手动设置路径"))
+
+    Err(anyhow!(
+        "未找到 {}，请手动设置路径",
+        variant.display_name
+    ))
 }
 
 #[cfg(not(any(target_os = "windows", target_os = "macos")))]
@@ -399,18 +412,27 @@ pub fn write_trae_login_info(info: &TraeLoginInfo) -> Result<()> {
     let expired_at = now + chrono::Duration::days(14);
     let refresh_expired_at = now + chrono::Duration::days(180);
 
-    // 构建 host URL
-    let host = if info.host.is_empty() {
-        match info.region.to_uppercase().as_str() {
-            "SG" => "https://api-sg-central.trae.ai",
-            "CN" => "https://api.trae.com.cn",
-            _ => "https://api-sg-central.trae.ai",
-        }
+    // 当前目标应用变体（决定 host 与区域格式）
+    let variant = crate::trae_app::current();
+    let region = if variant.is_cn {
+        "CN".to_string()
     } else {
-        &info.host
+        info.region.to_uppercase()
     };
 
-    // 构建 iCubeAuthInfo
+    // 构建 host URL：国内版固定 api.trae.cn，国际版按区域
+    let host = if !info.host.is_empty() {
+        info.host.clone()
+    } else if variant.is_cn {
+        "https://api.trae.cn".to_string()
+    } else {
+        match region.as_str() {
+            "US" => "https://api-us-east.trae.ai".to_string(),
+            _ => "https://api-sg-central.trae.ai".to_string(),
+        }
+    };
+
+    // 构建 iCubeAuthInfo（结构对齐国内版 1.107 客户端实测格式）
     let auth_info = serde_json::json!({
         "token": info.token,
         "refreshToken": info.refresh_token.clone().unwrap_or_default(),
@@ -420,8 +442,8 @@ pub fn write_trae_login_info(info: &TraeLoginInfo) -> Result<()> {
         "userId": info.user_id,
         "host": host,
         "userRegion": {
-            "region": info.region.to_uppercase(),
-            "_aiRegion": info.region.to_uppercase()
+            "region": region,
+            "_aiRegion": region
         },
         "account": {
             "username": info.username,
@@ -434,43 +456,63 @@ pub fn write_trae_login_info(info: &TraeLoginInfo) -> Result<()> {
             "description": "",
             "scope": "marscode",
             "loginScope": "trae",
-            "storeCountryCode": "cn",
-            "storeCountrySrc": "uid",
-            "storeRegion": info.region.to_uppercase(),
-            "userTag": "row"
+            "storeCountryCode": if variant.is_cn { "" } else { "cn" },
+            "storeCountrySrc": "",
+            "storeRegion": region,
+            "userTag": if variant.is_cn { "cn" } else { "row" },
+            "migrateToSG": false
         }
     });
 
-    // 构建 iCubeEntitlementInfo
-    let entitlement_info = serde_json::json!({
-        "identityStr": "Free",
-        "identity": 0,
-        "isPayFreshman": false,
-        "isSupportCommercialization": true,
-        "hasPackage": false,
-        "enableEntitlement": true,
-        "detail": {
-            "can_gen_solo_code": false,
-            "fast_request_per": 1,
-            "in_wait": false,
-            "permission": 1,
-            "toast_read": false,
-            "toastRead": false,
-            "canGenSoloCode": false,
-            "fastRequestPer": 1,
-            "inWaitlist": false
+    // 构建 iCubeServerData（明文存储，与客户端实际格式一致，登录后客户端会自行刷新）
+    let server_data = serde_json::json!({
+        "entitlementInfo": {
+            "identityStr": "Free",
+            "identity": 0,
+            "isPayFreshman": false,
+            "isSupportCommercialization": true,
+            "hasPackage": false,
+            "enableEntitlement": true
         }
     });
 
-    // 写入登录信息
+    // 写入登录信息：iCubeAuthInfo 按客户端格式加密，iCubeServerData 明文
+    let auth_plain = serde_json::to_string(&auth_info).unwrap();
+    let auth_stored = crate::crypto::write_storage_value(&auth_plain)
+        .unwrap_or_else(|e| {
+            println!("[WARN] 加密登录信息失败（回退明文）: {}", e);
+            auth_plain.clone()
+        });
     obj.insert(
         "iCubeAuthInfo://icube.cloudide".to_string(),
-        serde_json::Value::String(serde_json::to_string(&auth_info).unwrap())
+        serde_json::Value::String(auth_stored)
     );
     obj.insert(
-        "iCubeEntitlementInfo://icube.cloudide".to_string(),
-        serde_json::Value::String(serde_json::to_string(&entitlement_info).unwrap())
+        "iCubeServerData://icube.cloudide".to_string(),
+        serde_json::Value::String(serde_json::to_string(&server_data).unwrap())
     );
+
+    // 更新 usertag 映射（国内版按 userId 记录区域标签）
+    if variant.is_cn {
+        let usertag_plain = obj
+            .get("iCubeAuthInfo://usertag")
+            .and_then(|v| v.as_str())
+            .map(|s| crate::crypto::read_storage_value(s))
+            .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+            .unwrap_or_else(|| serde_json::json!({}));
+        if let Some(map) = usertag_plain.as_object() {
+            let mut new_map = map.clone();
+            new_map.insert(info.user_id.clone(), serde_json::json!(region.to_lowercase()));
+            if let Ok(plain) = serde_json::to_string(&new_map) {
+                if let Ok(enc) = crate::crypto::write_storage_value(&plain) {
+                    obj.insert(
+                        "iCubeAuthInfo://usertag".to_string(),
+                        serde_json::Value::String(enc),
+                    );
+                }
+            }
+        }
+    }
 
     // 写回文件
     let new_content = serde_json::to_string_pretty(&json)

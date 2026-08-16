@@ -92,3 +92,12 @@ export interface UsageEventsResponse {
 export interface ApiError {
   message: string;
 }
+
+// Trae 应用变体信息（Trae CN / TRAE SOLO CN / 国际版）
+export interface TraeAppInfo {
+  key: string;
+  display_name: string;
+  installed: boolean;
+  data_dir: string;
+  is_current: boolean;
+}
