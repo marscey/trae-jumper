@@ -12,7 +12,7 @@ export function About() {
           <img src={logoImage} alt="Logo" className="about-logo-image" />
         </div>
         <h3>TraeJumper</h3>
-        <p className="about-version">版本 1.0.0</p>
+        <p className="about-version">版本 0.9.7</p>
         <p className="about-desc">
           Trae 账号使用量管理工具，帮助您轻松管理多个 Trae 账号的使用情况。
         </p>
