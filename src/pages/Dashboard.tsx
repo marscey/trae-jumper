@@ -11,9 +11,10 @@ interface DashboardProps {
     usage?: UsageSummary | null;
     is_current?: boolean;
   }>;
+  currentClientName?: string;
 }
 
-export const Dashboard = memo(function Dashboard({ accounts }: DashboardProps) {
+export const Dashboard = memo(function Dashboard({ accounts, currentClientName }: DashboardProps) {
   const totalAccounts = accounts.length;
 
   // 合并所有统计计算为一次遍历，提升性能
@@ -60,7 +61,19 @@ export const Dashboard = memo(function Dashboard({ accounts }: DashboardProps) {
       <div className="dashboard-header">
         <div className="welcome-section">
           <h1>欢迎回来 👋</h1>
-          <p>这是您的账号使用概览</p>
+          <p>
+            这是您的账号使用概览
+            {currentClientName && (
+              <span className="client-badge" title="当前管理的客户端">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="13" height="13">
+                  <rect x="2" y="3" width="20" height="14" rx="2" ry="2"/>
+                  <line x1="8" y1="21" x2="16" y2="21"/>
+                  <line x1="12" y1="17" x2="12" y2="21"/>
+                </svg>
+                {currentClientName}
+              </span>
+            )}
+          </p>
         </div>
         <div className="header-stats">
           <div className="quick-stat">

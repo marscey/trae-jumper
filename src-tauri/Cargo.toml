@@ -1,6 +1,6 @@
 [package]
 name = "trae-jumper"
-version = "0.9.7"
+version = "0.9.8"
 description = "TraeJumper - 轻松管理 Trae 账号的小工具"
 authors = ["marscey"]
 edition = "2021"

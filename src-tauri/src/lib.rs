@@ -233,11 +233,25 @@ async fn get_trae_apps() -> Result<Vec<trae_app::TraeAppInfo>> {
     Ok(trae_app::list_app_infos())
 }
 
-/// 切换当前管理的目标应用（Trae CN / TRAE SOLO CN / 国际版）
+/// 切换当前管理的目标应用（Trae CN / TRAE WORK / 国际版）
 #[tauri::command]
 async fn set_current_trae_app(app_key: String) -> Result<()> {
     let variant = trae_app::find_variant(&app_key).map_err(ApiError::from)?;
-    trae_app::set_current(variant).map_err(ApiError::from)
+    trae_app::set_current(variant).map_err(ApiError::from)?;
+    // 切换后自动扫描并保存该客户端的安装路径，避免沿用上一个客户端的旧路径
+    // （Windows 不支持自动扫描，保留用户手动设置的路径）
+    #[cfg(target_os = "macos")]
+    {
+        match machine::scan_trae_path() {
+            Ok(path) => {
+                let _ = machine::save_trae_path(&path);
+            }
+            Err(_) => {
+                let _ = machine::clear_saved_trae_path();
+            }
+        }
+    }
+    Ok(())
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -321,10 +335,27 @@ pub fn run() {
         .expect("error while building tauri application");
 
     // 运行主事件循环
-    app.run(|_app_handle, event| {
-        if let tauri::RunEvent::ExitRequested { .. } = event {
-            // 退出时释放单实例锁
-            release_lock();
+    app.run(|app_handle, event| {
+        match event {
+            tauri::RunEvent::ExitRequested { .. } => {
+                // 退出时释放单实例锁
+                release_lock();
+            }
+            // macOS: 点击程序坞图标时重新显示主窗口（后台隐藏后唤起）
+            #[cfg(target_os = "macos")]
+            tauri::RunEvent::Reopen {
+                has_visible_windows,
+                ..
+            } => {
+                if !has_visible_windows {
+                    if let Some(window) = app_handle.get_webview_window("main") {
+                        let _ = window.show();
+                        let _ = window.unminimize();
+                        let _ = window.set_focus();
+                    }
+                }
+            }
+            _ => {}
         }
     });
 }
@@ -433,6 +464,8 @@ fn setup_system_tray(app: &tauri::App) -> std::result::Result<(), Box<dyn std::e
     TrayIconBuilder::new()
         .icon(icon)
         .menu(&menu)
+        // macOS 最佳实践：左键单击托盘图标直接显示窗口，右键才弹出菜单
+        .menu_on_left_click(false)
         .tooltip("Trae Jumper")
         // 左键单击显示窗口
         .on_tray_icon_event(|tray, event| {
