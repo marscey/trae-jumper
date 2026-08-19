@@ -6,7 +6,7 @@
 
 Trae CN / TRAE WORK / 国际版 Trae 多账号管理小工具
 
-[![Version](https://img.shields.io/badge/version-0.9.7-blue?style=flat-square)](https://github.com/marscey/trae-jumper/releases)
+[![Version](https://img.shields.io/badge/version-0.9.8-blue?style=flat-square)](https://github.com/marscey/trae-jumper/releases)
 [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS-lightgrey?style=flat-square)](#-系统要求)
 [![Build](https://img.shields.io/github/actions/workflow/status/marscey/trae-jumper/build.yml?style=flat-square)](https://github.com/marscey/trae-jumper/actions)
 [![License](https://img.shields.io/badge/license-MIT-orange?style=flat-square)](#-免责声明)
