@@ -3,7 +3,7 @@ use std::fs;
 use std::path::PathBuf;
 
 use super::types::*;
-use crate::api::{TraeApiClient, UsageSummary, UsageQueryResponse};
+use crate::api::{CreditSummary, TraeApiClient, UsageQueryResponse, UsageSummary};
 
 /// 账号管理器
 pub struct AccountManager {
@@ -385,6 +385,144 @@ impl AccountManager {
         self.save_store()?;
 
         Ok(summary)
+    }
+
+    /// 获取账号积分使用量（CN / WORK 积分体系优先，失败自动回退旧配额 UsageSummary）
+    ///
+    /// 返回值语义：
+    /// - `CreditSummary.is_credits_billing == true`：前端按积分新 UI 渲染
+    /// - `CreditSummary.is_credits_billing == false`：前端应回退，再调用 `get_account_usage`
+    ///   用旧 `UsageSummary` 显示（国际版 entitlements 配额）
+    pub async fn get_account_credits(&mut self, account_id: &str) -> Result<CreditSummary> {
+        let account = self
+            .store
+            .accounts
+            .iter()
+            .find(|a| a.id == account_id)
+            .ok_or_else(|| anyhow!("账号不存在"))?
+            .clone();
+
+        // 是否为国内版（CN / WORK）：优先用积分接口
+        let is_cn = crate::trae_app::current().is_cn
+            || account.region.eq_ignore_ascii_case("cn");
+
+        let try_credits_with_token = |token: &str| {
+            let token = token.to_string();
+            async move {
+                let client = TraeApiClient::new_with_token(&token)?;
+                client.get_credits_billing_status_by_token().await
+            }
+        };
+
+        let try_usage_with_token_as_fallback = |token: &str| {
+            let token = token.to_string();
+            async move {
+                // 旧配额体系兜底：拿到 UsageSummary 后包装成 CreditSummary
+                // （is_credits_billing = false，前端再单独 invoke get_account_usage 拿完整字段）
+                let client = TraeApiClient::new_with_token(&token)?;
+                let summary = client.get_usage_summary_by_token().await?;
+                Ok::<CreditSummary, anyhow::Error>(CreditSummary {
+                    is_credits_billing: false,
+                    plan_name: summary.plan_type.clone(),
+                    plan_expire_time: summary.reset_time,
+                    ..Default::default()
+                })
+            }
+        };
+
+        // 主流程：Token 优先
+        let summary = if let Some(token) = &account.jwt_token {
+            if is_cn {
+                // CN/WORK：先积分接口
+                match try_credits_with_token(token).await {
+                    Ok(c) => {
+                        // 若接口明确告知"不是积分计费"，直接返回（前端会 fallback）
+                        if !c.is_credits_billing {
+                            println!("[INFO] 账号 {} 返回 is_credits_billing=false，前端将回退旧配额展示",
+                                     account_id);
+                        }
+                        c
+                    }
+                    Err(e) => {
+                        let err_msg = e.to_string();
+                        // 401 → 刷新 Token 重试积分接口
+                        if err_msg.contains("401") && !account.cookies.is_empty() {
+                            println!("[INFO] 积分接口 401，尝试使用 Cookies 刷新 Token...");
+                            let refreshed = self.refresh_token_inner(&account_id).await;
+                            if let Some(new_token) = refreshed {
+                                match try_credits_with_token(&new_token).await {
+                                    Ok(c) => c,
+                                    Err(e2) => {
+                                        println!("[WARN] 刷新后积分接口仍失败: {}，回退旧配额", e2);
+                                        try_usage_with_token_as_fallback(&new_token).await?
+                                    }
+                                }
+                            } else {
+                                return Err(anyhow!("Token 已过期，刷新失败，请手动更新 Token 或 Cookies"));
+                            }
+                        } else if err_msg.contains("401") {
+                            return Err(anyhow!("Token 已过期，请更新 Token 或 Cookies"));
+                        } else {
+                            // 其他错误（如非积分账号、接口 404 老版本、网络异常）→ 回退旧配额
+                            println!("[WARN] 积分接口异常: {}，回退旧配额展示", err_msg);
+                            try_usage_with_token_as_fallback(token).await?
+                        }
+                    }
+                }
+            } else {
+                // 国际版 GLOBAL：直接返回 is_credits_billing=false，指示前端走旧 UsageSummary
+                try_usage_with_token_as_fallback(token).await?
+            }
+        } else if !account.cookies.is_empty() {
+            // 没 Token 但有 Cookies：取 Token 再走同样分支
+            let mut cookie_client = TraeApiClient::new(&account.cookies)?;
+            let token_result = cookie_client.get_user_token().await?;
+            // 顺手更新一下 Account 中存储的 Token
+            if let Some(acc) = self.store.accounts.iter_mut().find(|a| a.id == account_id) {
+                acc.jwt_token = Some(token_result.token.clone());
+                acc.token_expired_at = Some(token_result.expired_at.clone());
+            }
+            self.save_store()?;
+
+            if is_cn {
+                match try_credits_with_token(&token_result.token).await {
+                    Ok(c) => c,
+                    Err(_) => try_usage_with_token_as_fallback(&token_result.token).await?,
+                }
+            } else {
+                try_usage_with_token_as_fallback(&token_result.token).await?
+            }
+        } else {
+            return Err(anyhow!("账号没有有效的 Token 或 Cookies"));
+        };
+
+        // 同步 plan_type（保留在 Account 主字段里，账号卡等继续用）
+        if let Some(acc) = self.store.accounts.iter_mut().find(|a| a.id == account_id) {
+            if !summary.plan_name.trim().is_empty() {
+                acc.plan_type = summary.plan_name.clone();
+            }
+            acc.updated_at = chrono::Utc::now().timestamp();
+        }
+        self.save_store()?;
+
+        Ok(summary)
+    }
+
+    /// （内部）刷新指定账号 Token，成功返回新 token；失败返回 None，不抛错方便降级
+    async fn refresh_token_inner(&mut self, account_id: &str) -> Option<String> {
+        match self.refresh_token(account_id).await {
+            Ok(()) => {
+                self.store
+                    .accounts
+                    .iter()
+                    .find(|a| a.id == account_id)
+                    .and_then(|a| a.jwt_token.clone())
+            }
+            Err(e) => {
+                println!("[WARN] refresh_token_inner 失败: {}", e);
+                None
+            }
+        }
     }
 
     /// 刷新账号 Token

@@ -233,7 +233,8 @@ body {
   flex: 1;
   display: flex;
   flex-direction: column;
-  overflow: hidden;
+  overflow-y: auto;
+  overflow-x: hidden;
 }
 
 /* App Main - 主内容区域 */
@@ -629,7 +630,7 @@ body {
 /* Account Grid - 账号卡片网格 */
 .account-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(600px, 1fr));
   gap: 20px;
 }
 
@@ -668,7 +669,7 @@ body {
 
 /* Account Card - 账号卡片 */
 .account-card {
-  background: rgba(255, 255, 255, 0.9);
+  background: rgba(255, 255, 255, 0.92);
   backdrop-filter: blur(10px);
   -webkit-backdrop-filter: blur(10px);
   border-radius: var(--radius-lg);
@@ -699,7 +700,7 @@ body {
 
 .account-card:hover {
   box-shadow: var(--shadow-hover);
-  transform: translateY(-4px) scale(1.01);
+  transform: translateY(-2px);
   border-color: var(--accent-light);
 }
 
@@ -709,26 +710,15 @@ body {
   background: rgba(255, 255, 255, 0.95);
 }
 
-.account-card.selected::after {
-  content: '';
-  position: absolute;
-  inset: -2px;
-  background: var(--gradient-accent);
-  border-radius: var(--radius-lg);
-  z-index: -1;
-  opacity: 0.5;
-  filter: blur(8px);
-}
-
 .card-header {
   display: flex;
-  align-items: flex-start;
-  gap: var(--space-md);
-  margin-bottom: var(--space-lg);
+  align-items: center;
+  gap: 14px;
+  margin-bottom: 16px;
 }
 
 .card-checkbox {
-  margin-top: 8px;
+  flex-shrink: 0;
 }
 
 .card-checkbox input {
@@ -742,7 +732,7 @@ body {
 .card-avatar {
   width: 48px;
   height: 48px;
-  border-radius: var(--radius-md);
+  border-radius: 12px;
   overflow: hidden;
   flex-shrink: 0;
   box-shadow: var(--shadow-sm);
@@ -775,134 +765,160 @@ body {
   font-size: 15px;
   font-weight: 600;
   color: var(--text-primary);
-  display: flex;
-  align-items: center;
-  gap: var(--space-sm);
-  margin-bottom: 2px;
-}
-
-.card-email .copy-btn {
-  background: none;
-  border: none;
-  color: var(--text-muted);
-  cursor: pointer;
-  padding: 4px;
-  font-size: 12px;
-  border-radius: var(--radius-sm);
-  transition: all var(--transition);
-  opacity: 0;
-}
-
-.account-card:hover .card-email .copy-btn {
-  opacity: 1;
-}
-
-.card-email .copy-btn:hover {
-  color: var(--accent);
-  background: var(--accent-bg);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .card-name {
   font-size: 12px;
   color: var(--text-muted);
+  margin-top: 2px;
 }
 
-.card-status {
-  padding: 6px 12px;
-  border-radius: var(--radius-lg);
+.card-badges {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.plan-badge {
+  padding: 5px 12px;
+  border-radius: 7px;
   font-size: 12px;
-  font-weight: 600;
-  letter-spacing: 0.3px;
+  font-weight: 500;
+  letter-spacing: 0.2px;
+  background: var(--bg-hover);
+  color: var(--text-secondary);
+  white-space: nowrap;
 }
 
-.card-status.normal {
+.plan-badge.free {
+  background: #f0f1f5;
+  color: #8a8f9c;
+}
+
+.plan-badge.current {
+  background: linear-gradient(135deg, #059669 0%, #10b981 100%);
+  color: #ffffff;
+  font-weight: 600;
+  border: 1px solid rgba(16, 185, 129, 0.6);
+  box-shadow: 0 2px 6px rgba(16, 185, 129, 0.25);
+  letter-spacing: 0.3px;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+
+.plan-badge.current::before {
+  content: '✓';
+  font-size: 10px;
+  font-weight: 700;
+}
+
+/* Card current state — refined green with left accent bar */
+.account-card.current {
+  border-color: var(--success);
+  background: linear-gradient(to bottom, rgba(16, 185, 129, 0.06), rgba(255, 255, 255, 0.92));
+  box-shadow: 0 0 0 2px rgba(16, 185, 129, 0.12), var(--shadow-sm);
+}
+
+.account-card.current::before {
+  background: linear-gradient(180deg, #059669 0%, #10b981 100%);
+  opacity: 1;
+  height: 3px;
+}
+
+/* List item current state — subtle green accent */
+.account-list-item.current {
+  border-left: 3px solid var(--success);
+  background: linear-gradient(to right, rgba(16, 185, 129, 0.05), transparent 60%);
+}
+
+.account-list-item.current .list-item-avatar {
+  box-shadow: 0 0 0 2px var(--success);
+}
+
+.status-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 12px;
+  border-radius: 7px;
+  font-size: 12px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.status-tag.normal {
   background: var(--success-bg);
   color: var(--success);
 }
 
-.card-status.expired {
+.status-tag.expired {
   background: var(--danger-bg);
   color: var(--danger);
 }
 
-.card-status.expiring {
+.status-tag.expiring {
   background: var(--warning-bg);
   color: var(--warning);
 }
 
-/* Card Tags - 标签 */
-.card-tags {
-  display: flex;
-  gap: var(--space-sm);
-  margin-bottom: var(--space-lg);
+.status-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
 }
 
-.tag {
-  padding: 4px 10px;
-  border-radius: var(--radius-sm);
-  font-size: 12px;
-  font-weight: 500;
+.status-tag.normal .status-dot {
+  animation: pulse 2s infinite;
 }
 
-.tag.plan {
-  background: var(--bg-hover);
-  color: var(--text-secondary);
-}
-
-.tag.extra {
-  background: var(--warning-bg);
-  color: var(--warning);
-}
-
-/* Usage Section - 使用量区域 */
 .card-usage {
-  background: var(--bg-primary);
-  border-radius: var(--radius-md);
-  padding: 16px;
+  padding: 0;
   margin-bottom: 12px;
 }
 
-.usage-header {
+/* 进度条顶部：标签 + 百分比 */
+.usage-header-row {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin-bottom: var(--space-sm);
+  margin-bottom: 6px;
 }
 
-.usage-label {
+.usage-header-label {
   font-size: 13px;
+  font-weight: 600;
   color: var(--text-secondary);
-  font-weight: 500;
+  display: flex;
+  align-items: center;
+  gap: 5px;
 }
 
-.usage-percent {
-  font-size: 14px;
+.usage-header-label svg {
+  opacity: 0.7;
+}
+
+.usage-header-pct {
+  font-size: 13px;
   font-weight: 700;
-}
-
-.usage-percent.low {
-  color: var(--success);
-}
-
-.usage-percent.medium {
-  color: var(--warning);
-}
-
-.usage-percent.high {
-  color: var(--danger);
 }
 
 .usage-bar {
   height: 8px;
   background: var(--border);
-  border-radius: var(--radius-sm);
+  border-radius: 5px;
   overflow: hidden;
-  margin-bottom: var(--space-sm);
+  margin-bottom: 8px;
 }
 
 .usage-bar-fill {
   height: 100%;
-  border-radius: var(--radius-sm);
+  border-radius: 5px;
   transition: width 0.6s cubic-bezier(0.4, 0, 0.2, 1);
   position: relative;
   overflow: hidden;
@@ -915,193 +931,450 @@ body {
   left: 0;
   bottom: 0;
   right: 0;
-  background: linear-gradient(
-    90deg,
-    transparent,
-    rgba(255, 255, 255, 0.3),
-    transparent
-  );
+  background: linear-gradient(90deg, transparent, rgba(255,255,255,0.3), transparent);
   animation: shimmer 2s infinite;
 }
 
 @keyframes shimmer {
-  0% {
-    transform: translateX(-100%);
-  }
-  100% {
-    transform: translateX(100%);
-  }
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(100%); }
 }
 
-.usage-bar-fill.low {
-  background: linear-gradient(90deg, var(--success), var(--success-light));
-}
-
-.usage-bar-fill.medium {
-  background: linear-gradient(90deg, var(--warning), var(--warning-light));
-}
-
-.usage-bar-fill.high {
-  background: linear-gradient(90deg, var(--danger), var(--danger-light));
-}
-
-.usage-numbers {
+/* 进度条下方：剩余/总量(左) + 已使用(右) */
+.usage-bottom-row {
   display: flex;
   justify-content: space-between;
-  font-size: 13px;
+  align-items: baseline;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.3;
 }
 
-.usage-used {
-  color: var(--text-primary);
+.usage-left-group {
+  display: flex;
+  align-items: baseline;
+  gap: 3px;
+}
+
+.usage-left-primary {
+  font-size: 18px;
+  font-weight: 700;
+  letter-spacing: -0.3px;
+}
+
+.usage-divider {
+  font-size: 15px;
+  color: #c0c4cc;
+  font-weight: 400;
+}
+
+.usage-total {
+  font-size: 14px;
+  color: var(--text-muted);
+  font-weight: 500;
+}
+
+.usage-right-used {
+  font-size: 12px;
+  color: var(--text-muted);
+  text-align: right;
+}
+
+.usage-right-used strong {
+  color: var(--text-secondary);
   font-weight: 600;
 }
 
-.usage-left {
-  color: var(--text-muted);
-}
-
-/* Card Meta - 元信息 */
 .card-meta {
   display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-md);
+  align-items: center;
+  gap: 8px;
   font-size: 12px;
   color: var(--text-muted);
-  margin-bottom: var(--space-md);
+  padding-top: 12px;
+  border-top: 1px solid var(--border-light);
+  flex-wrap: nowrap;
+  overflow: hidden;
+  white-space: nowrap;
 }
 
-.meta-item {
-  display: flex;
+.card-meta .meta-item {
+  display: inline-flex;
   align-items: center;
   gap: 4px;
+  flex-shrink: 0;
 }
 
-.meta-item.warning {
-  color: var(--warning);
+.card-meta .meta-item-sep {
+  flex-shrink: 0;
 }
 
-.meta-item.danger {
-  color: var(--danger);
+.meta-item-sep {
+  color: #d5d9e2;
 }
 
-/* Card Footer - 卡片底部 */
-.card-footer {
-  display: flex;
+.card-meta svg {
+  opacity: 0.7;
+}
+
+/* ===== Toolbar Help ===== */
+.toolbar-help {
+  position: relative;
+  display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: var(--space-sm);
-  text-align: center;
-  padding-top: var(--space-md);
-  border-top: 1px solid var(--border-light);
-  font-size: 12px;
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
   color: var(--text-muted);
+  cursor: help;
+  transition: all 0.2s ease;
+}
+
+.toolbar-help:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.help-tooltip {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  min-width: 180px;
+  padding: 12px 14px;
+  background: var(--bg-primary);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: var(--shadow-hover);
+  font-size: 12px;
   opacity: 0;
-  transition: opacity var(--transition);
+  visibility: hidden;
+  transform: translateY(-4px);
+  transition: all 0.2s ease;
+  z-index: 100;
+  pointer-events: none;
 }
 
-.card-footer svg {
-  opacity: 0.6;
-}
-
-.account-card:hover .card-footer {
+.toolbar-help:hover .help-tooltip {
   opacity: 1;
+  visibility: visible;
+  transform: translateY(0);
 }
 
-/* Card Status Indicator */
-.card-status {
+.help-tooltip-title {
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-bottom: 8px;
+}
+
+.help-tooltip-item {
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 6px 12px;
-  border-radius: var(--radius-lg);
-  font-size: 12px;
-  font-weight: 600;
+  color: var(--text-secondary);
+  margin-top: 4px;
 }
 
-.card-status .status-indicator {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-}
-
-.card-status.normal {
-  background: var(--success-bg);
-  color: var(--success);
-}
-
-.card-status.normal .status-indicator {
-  background: var(--success);
-  animation: pulse 2s infinite;
-}
-
-.card-status.expired {
-  background: var(--danger-bg);
-  color: var(--danger);
-}
-
-.card-status.expired .status-indicator {
-  background: var(--danger);
-}
-
-.card-status.expiring .status-indicator {
-  background: var(--warning);
-  animation: pulse 2s infinite;
-}
-
-/* Card Email */
-.card-email {
-  font-size: 15px;
-  font-weight: 600;
+.help-tooltip-item kbd {
+  display: inline-block;
+  padding: 1px 5px;
+  font-size: 10px;
+  font-family: inherit;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 4px;
   color: var(--text-primary);
-  display: flex;
-  align-items: center;
-  gap: var(--space-sm);
-  margin-bottom: 2px;
+  font-weight: 600;
+  min-width: 32px;
+  text-align: center;
 }
 
-.card-email .email-text {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  max-width: 180px;
-}
-
-.card-email .copy-btn {
+/* ===== List Item Redesign ===== */
+.account-list-item {
   display: flex;
   align-items: center;
-  justify-content: center;
-  background: none;
-  border: none;
-  color: var(--text-muted);
+  gap: 14px;
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--border-light);
+  transition: background var(--transition);
   cursor: pointer;
-  padding: 4px;
-  border-radius: var(--radius-sm);
-  transition: all var(--transition);
-  opacity: 0;
 }
 
-.account-card:hover .card-email .copy-btn {
-  opacity: 1;
+.account-list-item:hover {
+  background: var(--bg-hover);
 }
 
-.card-email .copy-btn:hover {
-  color: var(--accent);
+.account-list-item.selected {
   background: var(--accent-bg);
 }
 
-/* Tag Extra with Icon */
-.tag.extra {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  background: var(--warning-bg);
-  color: var(--warning);
+.list-item-checkbox {
+  flex-shrink: 0;
 }
 
-/* Usage Numbers Strong */
-.usage-numbers .usage-used strong {
+.list-item-checkbox input {
+  width: 18px;
+  height: 18px;
+  cursor: pointer;
+  accent-color: var(--accent);
+}
+
+.list-item-avatar {
+  width: 48px;
+  height: 48px;
+  border-radius: 12px;
+  overflow: hidden;
+  flex-shrink: 0;
+}
+
+.list-item-avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.list-item-info {
+  flex: 0 0 auto;
+  min-width: 160px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.list-item-email {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.list-item-sub {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.list-item-badges {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+}
+
+.list-item-usage {
+  flex: 1;
+  min-width: 240px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 4px 0;
+}
+
+.usage-bar-mini {
+  height: 8px;
+  background: var(--border);
+  border-radius: 4px;
+  overflow: hidden;
+  flex-shrink: 0;
+}
+
+.usage-bar-fill-mini {
+  height: 100%;
+  border-radius: 4px;
+  transition: width 0.4s ease;
+}
+
+.usage-row-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.usage-row-header-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+.usage-row-header-pct {
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.usage-row-bottom {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  font-variant-numeric: tabular-nums;
+}
+
+.usage-row-left {
+  display: flex;
+  align-items: baseline;
+  gap: 3px;
+}
+
+.usage-row-left .usage-left-primary {
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: -0.2px;
+}
+
+.usage-row-left .usage-divider {
+  font-size: 13px;
+}
+
+.usage-row-left .usage-total {
+  font-size: 13px;
+}
+
+.usage-row-right {
+  font-size: 12px;
+  color: var(--text-muted);
+  text-align: right;
+}
+
+.usage-row-right strong {
+  color: var(--text-secondary);
+  font-weight: 600;
+}
+
+.list-item-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  font-size: 12px;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.list-item-meta .meta-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex-shrink: 0;
+}
+
+.list-item-meta svg {
+  opacity: 0.7;
+  flex-shrink: 0;
+}
+
+/* ===== Current Tag - Inline after account name ===== */
+.current-tag-inline {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  margin-left: 6px;
+  padding: 4px 9px;
+  font-size: 11px;
+  font-weight: 600;
+  color: #ffffff;
+  background: linear-gradient(135deg, #059669 0%, #10b981 100%);
+  border-radius: 8px;
+  white-space: nowrap;
+  vertical-align: middle;
+  line-height: 16px;
+  box-shadow: 0 1px 3px rgba(16, 185, 129, 0.3);
+}
+
+.current-tag-check {
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.card-info .current-tag-inline {
+  margin-left: 8px;
+}
+
+.list-item-info .current-tag-inline {
+  margin-left: 6px;
+}
+
+.card-info:hover .current-tag-inline,
+.list-item-info:hover .current-tag-inline {
+  color: #ffffff;
+  text-decoration: none;
+}
+
+/* ===== Expiry Date Color Coding ===== */
+/* 颜色编码规则：
+   - .expiry-expired: 已过期 (< 0 天) — 红色加粗
+   - .expiry-urgent:  紧急预警 (0-3 天) — 红色加粗
+   - .expiry-near:    临近预警 (4-7 天) — 橙色
+   - .expiry-safe:    安全 (> 7 天 或 永久) — 默认灰色
+   对比度：红/橙对白底背景对比度均 > 4.5:1 (WCAG AA)，可访问性达标 */
+.expiry-expired,
+.expiry-urgent {
+  color: var(--danger);
+  font-weight: 700;
+}
+
+.expiry-near {
+  color: var(--warning);
+  font-weight: 600;
+}
+
+.expiry-safe {
+  color: var(--text-muted);
+  font-weight: 400;
+}
+
+/* Credit Number Styling — 积分数值差异化 */
+.credit-number {
+  font-weight: 700;
+  color: var(--text-primary);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.3px;
+  padding: 0 2px;
+}
+
+/* Clickable account info — 点击用户名查看详情 */
+.card-info,
+.list-item-info {
+  cursor: pointer;
+  transition: opacity 0.15s ease;
+}
+
+.card-info:hover .card-email,
+.list-item-info:hover .list-item-email {
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.list-item-actions {
+  flex-shrink: 0;
+}
+
+.action-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  border-radius: 7px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.action-btn:hover {
+  background: var(--bg-hover);
   color: var(--text-primary);
 }
+
+/* Account current indicator for list — 继承全局 .plan-badge.current 的强光效果，无需覆盖 */
 
 /* Meta Item with Icon */
 .meta-item {
@@ -2063,6 +2336,542 @@ body {
 
 .detail-value.danger {
   color: var(--danger);
+}
+
+/* ====================================================================
+ * Detail Modal Redesign — 账号详情统一视觉体系
+ * ==================================================================== */
+
+/* ---- 基本信息卡片 ---- */
+.info-card {
+  background: #ffffff;
+  border: 1px solid #e6e8ef;
+  border-radius: 14px;
+  padding: 18px 20px;
+  margin-bottom: 14px;
+}
+
+.info-card-header {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-bottom: 16px;
+}
+
+.info-avatar {
+  width: 48px;
+  height: 48px;
+  border-radius: 12px;
+  overflow: hidden;
+  flex-shrink: 0;
+  background: linear-gradient(135deg, #6366f1, #a855f7);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.info-avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.info-avatar .avatar-placeholder {
+  font-size: 18px;
+  font-weight: 700;
+  color: white;
+}
+
+.info-card-title-wrap {
+  min-width: 0;
+}
+
+.info-card-name {
+  font-size: 16px;
+  font-weight: 700;
+  color: #1f2330;
+}
+
+.info-card-email {
+  font-size: 13px;
+  color: #8a8f9c;
+  margin-top: 2px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.info-card-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+.info-grid-item {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px 12px;
+  background: #f7f8fa;
+  border-radius: 10px;
+}
+
+.info-grid-label {
+  font-size: 12px;
+  color: #9ba1ad;
+  font-weight: 500;
+}
+
+.info-grid-value {
+  font-size: 14px;
+  font-weight: 600;
+  color: #1f2330;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ---- Token / Cookies 卡片 ---- */
+.secret-card {
+  background: #ffffff;
+  border: 1px solid #e6e8ef;
+  border-radius: 14px;
+  padding: 6px 16px;
+  margin-bottom: 14px;
+}
+
+.secret-row {
+  display: flex;
+  flex-direction: column;
+  padding: 12px 0;
+  border-bottom: 1px solid #f0f1f5;
+}
+
+.secret-row:last-child {
+  border-bottom: none;
+}
+
+.secret-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 500;
+  color: #9ba1ad;
+  margin-bottom: 8px;
+}
+
+.secret-label svg {
+  color: #b5bac5;
+}
+
+.secret-value-wrap {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.secret-code {
+  flex: 1;
+  font-family: 'SF Mono', 'Monaco', 'Consolas', 'Courier New', monospace;
+  font-size: 12px;
+  color: #1f2330;
+  background: #f7f8fa;
+  padding: 8px 12px;
+  border-radius: 8px;
+  border: 1px solid #eef0f4;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.secret-copy-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 1px solid #e6e8ef;
+  border-radius: 8px;
+  background: #ffffff;
+  color: #8a8f9c;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  flex-shrink: 0;
+}
+
+.secret-copy-btn:hover {
+  background: linear-gradient(135deg, #6366f1, #a855f7);
+  border-color: transparent;
+  color: white;
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(99, 102, 241, 0.25);
+}
+
+/* ---- 积分 Hero 卡片 ---- */
+.credit-hero {
+  display: flex;
+  flex-direction: column;
+  padding: 24px 28px 20px;
+  background: linear-gradient(135deg, #f8f9fc 0%, #eef1f8 100%);
+  border: 1px solid #e6e8ef;
+  border-radius: 16px;
+  margin-bottom: 14px;
+  position: relative;
+  overflow: hidden;
+}
+
+.credit-hero::before {
+  content: '';
+  position: absolute;
+  top: -40px;
+  right: -40px;
+  width: 140px;
+  height: 140px;
+  background: radial-gradient(circle, rgba(99, 102, 241, 0.10) 0%, transparent 70%);
+  pointer-events: none;
+}
+
+.credit-hero-top {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 18px;
+}
+
+.credit-hero-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: #8a8f9c;
+  font-weight: 500;
+}
+
+.credit-hero-label svg {
+  color: #9ba1ad;
+}
+
+.credit-hero-value {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 36px;
+  font-weight: 700;
+  color: #1f2330;
+  letter-spacing: -0.5px;
+  line-height: 1.1;
+  font-variant-numeric: tabular-nums;
+}
+
+.credit-hero-icon {
+  font-size: 28px;
+  background: linear-gradient(135deg, #6366f1, #a855f7);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+.credit-hero-split {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding-top: 16px;
+  border-top: 1px solid rgba(0, 0, 0, 0.06);
+  position: relative;
+  z-index: 1;
+}
+
+.credit-hero-sub {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.credit-hero-sub-label {
+  font-size: 12px;
+  color: #9ba1ad;
+  font-weight: 500;
+}
+
+.credit-hero-sub-value {
+  font-size: 20px;
+  font-weight: 700;
+  color: #1f2330;
+  letter-spacing: -0.2px;
+  font-variant-numeric: tabular-nums;
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
+}
+
+.credit-hero-sub-total {
+  font-size: 13px;
+  font-weight: 500;
+  color: #b5bac5;
+}
+
+.credit-hero-divider {
+  width: 1px;
+  height: 32px;
+  background: #e0e3eb;
+}
+
+/* ---- 奖励积分 ---- */
+.credit-reward-section {
+  margin-bottom: 16px;
+}
+
+.credit-reward-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: #1f2330;
+  margin-bottom: 10px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.credit-reward-title::before {
+  content: '';
+  width: 3px;
+  height: 14px;
+  background: linear-gradient(180deg, #6366f1, #a855f7);
+  border-radius: 2px;
+}
+
+.credit-reward-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.credit-reward-item,
+.credit-reward-group {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 14px 16px;
+  background: #ffffff;
+  border: 1px solid #e6e8ef;
+  border-radius: 12px;
+  transition: all 0.2s ease;
+}
+
+.credit-reward-item:hover,
+.credit-reward-group-header:hover {
+  border-color: #d5d9e2;
+  background: #fafbfd;
+}
+
+.credit-reward-item.is-empty,
+.credit-reward-group.is-empty {
+  opacity: 0.55;
+}
+
+.credit-reward-item.is-empty .credit-reward-name,
+.credit-reward-group.is-empty .credit-reward-name,
+.credit-reward-child.is-empty .credit-reward-child-name {
+  color: #9ba1ad;
+}
+
+.credit-reward-item.is-empty .credit-reward-amount,
+.credit-reward-group.is-empty .credit-reward-amount,
+.credit-reward-child.is-empty .credit-reward-child-amount {
+  color: #b5bac5;
+}
+
+.credit-reward-info {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.credit-reward-name {
+  font-size: 14px;
+  font-weight: 600;
+  color: #1f2330;
+}
+
+.credit-reward-count {
+  font-size: 12px;
+  font-weight: 500;
+  color: #9ba1ad;
+}
+
+.credit-reward-meta {
+  font-size: 12px;
+  color: #9ba1ad;
+}
+
+.credit-reward-amount {
+  font-size: 15px;
+  font-weight: 600;
+  color: #1f2330;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* Group (collapsible) */
+.credit-reward-group {
+  flex-direction: column;
+  padding: 0;
+  overflow: hidden;
+}
+
+.credit-reward-group-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 14px 16px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  width: 100%;
+}
+
+.credit-reward-chevron {
+  display: inline-flex;
+  align-items: center;
+  transition: transform 0.25s ease;
+  color: #9ba1ad;
+}
+
+.credit-reward-chevron.open {
+  transform: rotate(180deg);
+}
+
+.credit-reward-children {
+  display: flex;
+  flex-direction: column;
+  padding: 4px 16px 12px 16px;
+  gap: 2px;
+  border-top: 1px solid #f0f1f5;
+  background: #fafbfd;
+}
+
+.credit-reward-child {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  transition: background 0.15s ease;
+}
+
+.credit-reward-child:hover {
+  background: #f0f1f5;
+}
+
+.credit-reward-child-name {
+  font-size: 13px;
+  color: #4a5060;
+  font-weight: 500;
+}
+
+.credit-reward-child-meta {
+  font-size: 12px;
+  color: #9ba1ad;
+}
+
+.credit-reward-child-amount {
+  font-size: 13px;
+  font-weight: 600;
+  color: #1f2330;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.credit-reward-empty {
+  font-size: 13px;
+  color: #8a8f9c;
+}
+
+/* ---- 积分明细 ---- */
+.credit-detail-section {
+  margin-bottom: 16px;
+  background: #ffffff;
+  border: 1px solid #e6e8ef;
+  border-radius: 14px;
+  padding: 18px 20px;
+}
+
+.credit-detail-section h3 {
+  font-size: 14px;
+  font-weight: 600;
+  color: #1f2330;
+  margin-bottom: 12px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.credit-detail-section h3::before {
+  content: '';
+  width: 3px;
+  height: 13px;
+  background: linear-gradient(180deg, #6366f1, #a855f7);
+  border-radius: 2px;
+}
+
+.credit-detail-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 12px;
+}
+
+.credit-detail-item {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px 12px;
+  background: #f7f8fa;
+  border-radius: 10px;
+}
+
+.credit-detail-item.highlight {
+  background: linear-gradient(135deg, #eef2ff 0%, #f5f3ff 100%);
+}
+
+.credit-detail-label {
+  font-size: 12px;
+  color: #9ba1ad;
+  font-weight: 500;
+}
+
+.credit-detail-value {
+  font-size: 18px;
+  font-weight: 700;
+  color: #1f2330;
+  font-variant-numeric: tabular-nums;
+}
+
+.credit-detail-item.highlight .credit-detail-value {
+  color: #4f46e5;
+}
+
+/* ---- 套餐 footer ---- */
+.credit-plan-footer {
+  display: flex;
+  justify-content: center;
+  padding: 12px 16px;
+  font-size: 13px;
+  color: #8a8f9c;
+  background: #f7f8fa;
+  border-radius: 10px;
+  margin-top: 8px;
+}
+
+.credit-plan-footer strong {
+  color: #1f2330;
+  font-weight: 600;
 }
 
 /* Loading - 加载状态 */
@@ -3618,259 +4427,6 @@ body {
   align-items: center;
 }
 
-/* Account List Item - 列表项 */
-.account-list-item {
-  display: grid;
-  grid-template-columns: 40px 48px 1fr 120px 180px 120px 80px 48px;
-  gap: var(--space-md);
-  padding: var(--space-lg);
-  border-bottom: 1px solid var(--border-light);
-  cursor: pointer;
-  transition: all var(--transition);
-}
-
-.account-list-item:last-child {
-  border-bottom: none;
-}
-
-.account-list-item:hover {
-  background: var(--bg-hover);
-}
-
-.account-list-item.selected {
-  background: var(--accent-bg);
-}
-
-.list-item-checkbox {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.list-item-checkbox input {
-  width: 18px;
-  height: 18px;
-  cursor: pointer;
-  accent-color: var(--accent);
-}
-
-.list-item-avatar {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.list-item-avatar img {
-  width: 40px;
-  height: 40px;
-  border-radius: var(--radius);
-  object-fit: cover;
-}
-
-.list-item-avatar .avatar-placeholder {
-  width: 40px;
-  height: 40px;
-  border-radius: var(--radius);
-  background: var(--gradient-accent);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-weight: 600;
-  font-size: 16px;
-  color: var(--text-inverse);
-}
-
-.list-item-info {
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-  min-width: 0;
-}
-
-.list-item-email {
-  font-size: 14px;
-  font-weight: 600;
-  color: var(--text-primary);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.list-item-id {
-  font-size: 12px;
-  color: var(--text-muted);
-  margin-top: 2px;
-}
-
-.list-item-plan {
-  display: flex;
-  align-items: center;
-  gap: var(--space-sm);
-}
-
-.plan-badge {
-  padding: 5px 12px;
-  background: var(--bg-hover);
-  border-radius: var(--radius-sm);
-  font-size: 12px;
-  font-weight: 500;
-  color: var(--text-secondary);
-}
-
-.extra-badge {
-  padding: 4px 8px;
-  background: var(--warning-bg);
-  border-radius: var(--radius-sm);
-  font-size: 11px;
-  font-weight: 600;
-  color: var(--warning);
-}
-
-.list-item-usage {
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-  gap: var(--space-xs);
-}
-
-.usage-info {
-  display: flex;
-  justify-content: space-between;
-  font-size: 12px;
-}
-
-.usage-text {
-  color: var(--text-primary);
-  font-weight: 600;
-}
-
-.usage-bar-mini {
-  height: 6px;
-  background: var(--border);
-  border-radius: var(--radius-sm);
-  overflow: hidden;
-}
-
-.usage-bar-fill-mini {
-  height: 100%;
-  border-radius: var(--radius-sm);
-  transition: width 0.6s cubic-bezier(0.4, 0, 0.2, 1);
-  position: relative;
-  overflow: hidden;
-}
-
-.usage-bar-fill-mini::after {
-  content: '';
-  position: absolute;
-  top: 0;
-  left: 0;
-  bottom: 0;
-  right: 0;
-  background: linear-gradient(
-    90deg,
-    transparent,
-    rgba(255, 255, 255, 0.3),
-    transparent
-  );
-  animation: shimmer 2s infinite;
-}
-
-.list-item-reset {
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-}
-
-.reset-label {
-  font-size: 11px;
-  color: var(--text-muted);
-}
-
-.reset-date {
-  font-size: 13px;
-  color: var(--text-primary);
-  font-weight: 500;
-}
-
-.list-item-status {
-  display: flex;
-  align-items: center;
-  gap: var(--space-sm);
-  font-size: 13px;
-  color: var(--text-secondary);
-}
-
-.status-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  animation: pulse 2s infinite;
-}
-
-@keyframes pulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.6; }
-}
-
-.status-dot.normal {
-  background: var(--success);
-}
-
-.status-dot.expired {
-  background: var(--danger);
-  animation: none;
-}
-
-.status-dot.expiring {
-  background: var(--warning);
-  animation: pulse 2s infinite;
-}
-
-.list-item-actions {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.action-btn {
-  width: 32px;
-  height: 32px;
-  border: none;
-  border-radius: var(--radius);
-  background: transparent;
-  color: var(--text-muted);
-  font-size: 18px;
-  cursor: pointer;
-  transition: all var(--transition);
-}
-
-.action-btn:hover {
-  background: var(--bg-hover);
-  color: var(--text-primary);
-}
-
-/* Responsive List View */
-@media (max-width: 1200px) {
-  .list-header,
-  .account-list-item {
-    grid-template-columns: 40px 48px 1fr 100px 150px 100px 70px 40px;
-  }
-}
-
-@media (max-width: 900px) {
-  .list-header,
-  .account-list-item {
-    grid-template-columns: 40px 48px 1fr 100px 120px 40px;
-  }
-
-  .list-col.reset,
-  .list-item-reset,
-  .list-col.status,
-  .list-item-status {
-    display: none;
-  }
-}
-
 /* Usage Events */
 .usage-events {
   background: var(--bg-card);
@@ -4171,17 +4727,6 @@ body {
 
 .machine-id-tip.warning svg {
   color: var(--warning);
-}
-
-/* Current Account Badge - 当前使用账号标记 */
-.account-card.current {
-  border-color: var(--success);
-  background: linear-gradient(to bottom, rgba(16, 185, 129, 0.08), var(--bg-secondary));
-}
-
-.account-card.current::before {
-  background: linear-gradient(135deg, var(--success) 0%, #34d399 100%);
-  opacity: 1;
 }
 
 .tag.current {
