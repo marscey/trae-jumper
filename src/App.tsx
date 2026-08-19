@@ -1,4 +1,6 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
+import { createPortal } from "react-dom";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { Sidebar } from "./components/Sidebar";
 import { AccountCard } from "./components/AccountCard";
 import { AccountListItem } from "./components/AccountListItem";
@@ -33,6 +35,25 @@ function App() {
   const [importing, setImporting] = useState(false);
   const [currentPage, setCurrentPage] = useState("dashboard");
   const [viewMode, setViewMode] = useState<ViewMode>("grid");
+  const [currentClientName, setCurrentClientName] = useState<string>("");
+
+  // 同步窗口标题（含当前客户端名）
+  useEffect(() => {
+    const title = currentClientName
+      ? `TraeJumper · ${currentClientName}`
+      : "TraeJumper";
+    getCurrentWindow().setTitle(title).catch(() => {});
+  }, [currentClientName]);
+
+  // 启动时加载当前客户端名
+  useEffect(() => {
+    api.getTraeApps()
+      .then((apps) => {
+        const current = apps.find((a) => a.is_current);
+        if (current) setCurrentClientName(current.display_name);
+      })
+      .catch(() => {});
+  }, []);
 
   // 使用自定义 Toast hook
   const { toasts, addToast, removeToast } = useToast();
@@ -64,6 +85,31 @@ function App() {
     accountId: string;
     accountName: string;
   } | null>(null);
+
+  // 操作组下拉菜单状态
+  const [actionMenuOpen, setActionMenuOpen] = useState(false);
+  const [menuPos, setMenuPos] = useState<{ top: number; right: number }>({ top: 0, right: 0 });
+  const actionBtnRef = useRef<HTMLButtonElement>(null);
+
+  const toggleActionMenu = () => {
+    if (!actionMenuOpen && actionBtnRef.current) {
+      const rect = actionBtnRef.current.getBoundingClientRect();
+      setMenuPos({ top: rect.bottom + 8, right: window.innerWidth - rect.right });
+    }
+    setActionMenuOpen(!actionMenuOpen);
+  };
+
+  // 菜单打开时监听 scroll/resize，自动关闭防止定位错乱
+  useEffect(() => {
+    if (!actionMenuOpen) return;
+    const close = () => setActionMenuOpen(false);
+    window.addEventListener("scroll", close, true);
+    window.addEventListener("resize", close);
+    return () => {
+      window.removeEventListener("scroll", close, true);
+      window.removeEventListener("resize", close);
+    };
+  }, [actionMenuOpen]);
 
   // 信息展示弹窗状态
   const [infoModal, setInfoModal] = useState<{
@@ -282,10 +328,11 @@ function App() {
     const account = accounts.find((a) => a.id === accountId);
     if (!account) return;
 
+    const clientName = currentClientName || "客户端";
     setConfirmModal({
       isOpen: true,
       title: "切换账号",
-      message: `确定要切换到账号 "${account.email || account.name}" 吗？\n\n系统将自动关闭 Trae IDE 并切换登录信息。`,
+      message: `确定要切换到账号 "${account.email || account.name}" 吗？\n\n系统将自动关闭 ${clientName} 并切换登录信息。`,
       type: "warning",
       onConfirm: async () => {
         setConfirmModal(null);
@@ -293,7 +340,7 @@ function App() {
         try {
           await api.switchAccount(accountId);
           await loadAccounts();
-          addToast("success", "账号切换成功，请重新打开 Trae IDE");
+          addToast("success", `账号切换成功，请重新打开 ${clientName}`);
         } catch (err: any) {
           addToast("error", err.message || "切换账号失败");
         }
@@ -709,7 +756,7 @@ function App() {
         )}
 
         {currentPage === "dashboard" && (
-          <Dashboard accounts={accounts} />
+          <Dashboard accounts={accounts} currentClientName={currentClientName} />
         )}
 
         {currentPage === "accounts" && (
@@ -720,44 +767,85 @@ function App() {
                 <p>管理您的账号</p>
               </div>
               <div className="header-right">
+                {currentClientName && (
+                  <span className="client-badge" title="当前管理的客户端">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="14" height="14">
+                      <rect x="2" y="3" width="20" height="14" rx="2" ry="2"/>
+                      <line x1="8" y1="21" x2="16" y2="21"/>
+                      <line x1="12" y1="17" x2="12" y2="21"/>
+                    </svg>
+                    {currentClientName}
+                  </span>
+                )}
                 <span className="account-count">共 {accounts.length} 个账号</span>
-                <button
-                  className="header-btn danger"
-                  onClick={handleDeleteExpiredAccounts}
-                  title="删除所有过期账号"
-                  disabled={accounts.length === 0}
-                >
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="16" height="16">
-                    <path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
-                    <line x1="10" y1="11" x2="10" y2="17"/>
-                    <line x1="14" y1="11" x2="14" y2="17"/>
-                  </svg>
-                  删除过期
-                  {(() => {
-                    const expiredCount = accounts.filter((account) => {
-                      if (!account.token_expired_at) return false;
-                      const expiry = new Date(account.token_expired_at).getTime();
-                      if (isNaN(expiry)) return false;
-                      return expiry < Date.now();
-                    }).length;
-                    return expiredCount > 0 ? <span className="badge-count">{expiredCount}</span> : null;
-                  })()}
-                </button>
-                <button className="header-btn" onClick={handleShowImportInfo} title="导入账号">
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="16" height="16">
-                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/>
-                  </svg>
-                  导入
-                </button>
-                <button className="header-btn" onClick={handleShowExportInfo} title="导出账号" disabled={accounts.length === 0}>
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="16" height="16">
-                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12"/>
-                  </svg>
-                  导出
-                </button>
                 <button className="add-btn" onClick={() => setShowAddModal(true)}>
                   <span>+</span> 添加账号
                 </button>
+                <div className="action-menu-wrapper">
+                  <button
+                    ref={actionBtnRef}
+                    className="header-btn icon-only"
+                    onClick={toggleActionMenu}
+                    title="更多操作"
+                  >
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="16" height="16">
+                      <circle cx="12" cy="12" r="1"/>
+                      <circle cx="12" cy="5" r="1"/>
+                      <circle cx="12" cy="19" r="1"/>
+                    </svg>
+                  </button>
+                  {actionMenuOpen && createPortal(
+                    <>
+                      <div className="action-menu-overlay" onClick={() => setActionMenuOpen(false)} />
+                      <div
+                        className="action-menu"
+                        style={{ top: menuPos.top, right: menuPos.right }}
+                      >
+                        <button
+                          className="action-menu-item danger"
+                          onClick={() => { setActionMenuOpen(false); handleDeleteExpiredAccounts(); }}
+                          disabled={accounts.length === 0}
+                        >
+                          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="16" height="16">
+                            <path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
+                            <line x1="10" y1="11" x2="10" y2="17"/>
+                            <line x1="14" y1="11" x2="14" y2="17"/>
+                          </svg>
+                          删除过期
+                          {(() => {
+                            const expiredCount = accounts.filter((account) => {
+                              if (!account.token_expired_at) return false;
+                              const expiry = new Date(account.token_expired_at).getTime();
+                              if (isNaN(expiry)) return false;
+                              return expiry < Date.now();
+                            }).length;
+                            return expiredCount > 0 ? <span className="badge-count">{expiredCount}</span> : null;
+                          })()}
+                        </button>
+                        <button
+                          className="action-menu-item"
+                          onClick={() => { setActionMenuOpen(false); handleShowImportInfo(); }}
+                        >
+                          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="16" height="16">
+                            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/>
+                          </svg>
+                          导入账号
+                        </button>
+                        <button
+                          className="action-menu-item"
+                          onClick={() => { setActionMenuOpen(false); handleShowExportInfo(); }}
+                          disabled={accounts.length === 0}
+                        >
+                          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="16" height="16">
+                            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12"/>
+                          </svg>
+                          导出账号
+                        </button>
+                      </div>
+                    </>,
+                    document.body
+                  )}
+                </div>
               </div>
             </header>
 
@@ -785,6 +873,20 @@ function App() {
                     </button>
                     {selectedIds.size > 0 && (
                       <div className="batch-actions">
+                        <button
+                          className="batch-btn primary"
+                          onClick={() => handleSwitchAccount(Array.from(selectedIds)[0])}
+                          disabled={selectedIds.size !== 1}
+                          title={selectedIds.size === 1 ? "切换到选中账号" : "请选择单个账号"}
+                        >
+                          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="14" height="14">
+                            <path d="M17 1l4 4-4 4"/>
+                            <path d="M3 11V9a4 4 0 0 1 4-4h14"/>
+                            <path d="M7 23l-4-4 4-4"/>
+                            <path d="M21 13v2a4 4 0 0 1-4 4H3"/>
+                          </svg>
+                          切换账号
+                        </button>
                         <button className="batch-btn danger" onClick={handleBatchDelete}>
                           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="14" height="14">
                             <path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
@@ -902,7 +1004,7 @@ function App() {
                 <p>配置应用程序选项</p>
               </div>
             </header>
-            <Settings onToast={addToast} onExport={handleShowExportInfo} onImport={handleShowImportInfo} onClearData={handleClearData} />
+            <Settings onToast={addToast} onExport={handleShowExportInfo} onImport={handleShowImportInfo} onClearData={handleClearData} onClientChange={setCurrentClientName} />
           </>
         )}
 
