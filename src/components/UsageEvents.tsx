@@ -1,15 +1,37 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import type { UsageEvent } from '../types';
 import { getUsageEvents } from '../api';
 
-interface UsageEventsProps {
+// 开发环境（无 Tauri）检测：避免 invoke 调用阻塞渲染
+const hasTauri = (): boolean =>
+  typeof window !== 'undefined' &&
+  // @ts-ignore
+  (typeof window.__TAURI_INTERNALS__ !== 'undefined' || typeof window.__TAURI__ !== 'undefined');
+
+// 详情视图：单账号模式 + 内部控制时间范围
+interface SingleAccountUsageEventsProps {
   accountId: string;
+  onError?: (error: string) => void;
+  accounts?: undefined;
+}
+
+// 仪表盘视图：多账号汇总模式 + 内部控制时间范围
+interface MultiAccountUsageEventsProps {
+  accounts: Array<{ id: string; email?: string; name?: string; events?: UsageEvent[] | null }>;
+  accountId?: undefined;
   onError?: (error: string) => void;
 }
 
+type UsageEventsProps = SingleAccountUsageEventsProps | MultiAccountUsageEventsProps;
+
 type TimeFilter = 'today' | '7days' | '30days' | 'custom';
 
-export function UsageEvents({ accountId, onError }: UsageEventsProps) {
+function accountLabel(acc: { email?: string; name?: string; id: string }) {
+  return acc.email || acc.name || acc.id.slice(0, 8);
+}
+
+export function UsageEvents(props: UsageEventsProps) {
+  // ============ 单账号（详情）内部状态 ============
   const [events, setEvents] = useState<UsageEvent[]>([]);
   const [loading, setLoading] = useState(false);
   const [timeFilter, setTimeFilter] = useState<TimeFilter>('7days');
@@ -18,7 +40,9 @@ export function UsageEvents({ accountId, onError }: UsageEventsProps) {
   const [showDatePicker, setShowDatePicker] = useState(false);
   const [total, setTotal] = useState(0);
 
-  // 计算时间戳范围
+  const isMulti = 'accounts' in props && !!props.accounts;
+
+  // 计算时间戳范围（秒）
   const getTimeRange = (filter: TimeFilter): { startTime: number; endTime: number } => {
     const now = new Date();
     const endTime = Math.floor(now.getTime() / 1000);
@@ -65,20 +89,25 @@ export function UsageEvents({ accountId, onError }: UsageEventsProps) {
     return `${year}/${month}/${day} ${hours}:${minutes}`;
   };
 
-  // 加载使用事件
+  // 加载使用事件（仅单账号模式使用，且需要 Tauri 环境可用）
   const loadEvents = async () => {
-    if (!accountId) return;
+    if (isMulti || !props.accountId) return;
+    if (!hasTauri()) {
+      setEvents([]);
+      setTotal(0);
+      return;
+    }
 
     setLoading(true);
     try {
       const { startTime, endTime } = getTimeRange(timeFilter);
-      const response = await getUsageEvents(accountId, startTime, endTime, 1, 20);
+      const response = await getUsageEvents(props.accountId, startTime, endTime, 1, 20);
 
       setEvents(response.user_usage_group_by_sessions || []);
       setTotal(response.total || 0);
     } catch (error) {
       console.error('Failed to load usage events:', error);
-      onError?.('加载使用事件失败');
+      props.onError?.('加载使用事件失败');
       setEvents([]);
       setTotal(0);
     } finally {
@@ -87,8 +116,11 @@ export function UsageEvents({ accountId, onError }: UsageEventsProps) {
   };
 
   useEffect(() => {
-    loadEvents();
-  }, [accountId, timeFilter, startDate, endDate]);
+    if (!isMulti) {
+      loadEvents();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isMulti ? undefined : props.accountId, timeFilter, startDate, endDate]);
 
   const handleTimeFilterChange = (filter: TimeFilter) => {
     setTimeFilter(filter);
@@ -107,10 +139,31 @@ export function UsageEvents({ accountId, onError }: UsageEventsProps) {
     return `${start} - ${end}`;
   };
 
+  // ============ 多账号模式：合并 events 并按内部 timeFilter 过滤 ============
+  const mergedRows = useMemo<Array<UsageEvent & { _accountLabel?: string }>>(() => {
+    if (!isMulti) return [];
+    const { startTime } = getTimeRange(timeFilter);
+    const out: Array<UsageEvent & { _accountLabel?: string }> = [];
+    props.accounts.forEach((acc) => {
+      (acc.events ?? []).forEach((e) => {
+        if (startTime > 0 && e.usage_time < startTime) return;
+        out.push({ ...e, _accountLabel: accountLabel(acc) });
+      });
+    });
+    out.sort((a, b) => b.usage_time - a.usage_time);
+    return out;
+  }, [isMulti, props, timeFilter, startDate, endDate]);
+
+  // 最终渲染数据
+  const finalTitle = '账号使用情况';
+  const finalRows = isMulti ? mergedRows : events;
+  const finalLoading = !isMulti && loading;
+  const finalTotal = isMulti ? mergedRows.length : total;
+
   return (
-    <div className="usage-events">
+    <div className={`usage-events ${isMulti ? '' : 'stat-card'}`}>
       <div className="usage-events-header">
-        <h2>账号使用情况</h2>
+        <h2>{finalTitle}</h2>
         <div className="usage-events-filters">
           <div className="time-filter-buttons">
             <button
@@ -174,9 +227,9 @@ export function UsageEvents({ accountId, onError }: UsageEventsProps) {
       )}
 
       <div className="usage-events-table-container">
-        {loading ? (
+        {finalLoading ? (
           <div className="loading-state">加载中...</div>
-        ) : events.length === 0 ? (
+        ) : finalRows.length === 0 ? (
           <div className="empty-state">
             <p>暂无使用记录</p>
           </div>
@@ -185,6 +238,7 @@ export function UsageEvents({ accountId, onError }: UsageEventsProps) {
             <thead>
               <tr>
                 <th>Time</th>
+                {isMulti && <th>账号</th>}
                 <th>Mode</th>
                 <th>Model</th>
                 <th>
@@ -201,9 +255,10 @@ export function UsageEvents({ accountId, onError }: UsageEventsProps) {
               </tr>
             </thead>
             <tbody>
-              {events.map((event) => (
-                <tr key={event.session_id}>
+              {finalRows.slice(0, isMulti ? 50 : undefined).map((event) => (
+                <tr key={(event as any)._accountLabel ? `${event.session_id}_${(event as any)._accountLabel}` : event.session_id}>
                   <td>{formatTimestamp(event.usage_time)}</td>
+                  {isMulti && <td>{(event as any)._accountLabel ?? '-'}</td>}
                   <td>{event.mode || '-'}</td>
                   <td>{event.model_name}</td>
                   <td>{event.cost_money_float > 0 ? `$${event.cost_money_float.toFixed(4)}` : 'N/A'}</td>
@@ -220,9 +275,9 @@ export function UsageEvents({ accountId, onError }: UsageEventsProps) {
           </table>
         )}
       </div>
-      {total > 0 && (
+      {finalTotal > 0 && (
         <div style={{ marginTop: '12px', fontSize: '14px', color: '#64748b', textAlign: 'right' }}>
-          共 {total} 条记录
+          共 {finalTotal} 条记录
         </div>
       )}
     </div>

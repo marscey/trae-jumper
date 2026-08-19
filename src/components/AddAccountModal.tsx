@@ -20,8 +20,9 @@ export function AddAccountModal({ isOpen, onClose, onAdd, onToast, onAccountAdde
   const [error, setError] = useState("");
   const [browserLoginStarted, setBrowserLoginStarted] = useState(false);
 
-  // 监听浏览器登录事件
+  // 监听浏览器登录事件（仅在 Tauri 环境下注册）
   useEffect(() => {
+    if (!api.hasTauri()) return;
     const unlistenSuccess = listen<string>("login-success", (event) => {
       onToast?.("success", `浏览器登录成功: ${event.payload}`);
       onAccountAdded?.();

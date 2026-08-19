@@ -18,8 +18,8 @@ use tauri::{
     tray::{TrayIconBuilder, TrayIconEvent, MouseButton, MouseButtonState},
 };
 
-use account::{AccountBrief, AccountManager, Account};
-use api::{UsageSummary, UsageQueryResponse};
+use account::{Account, AccountBrief, AccountManager};
+use api::{CreditSummary, UsageQueryResponse, UsageSummary};
 
 /// 应用状态
 pub struct AppState {
@@ -84,6 +84,13 @@ async fn switch_account(account_id: String, state: State<'_, AppState>) -> Resul
 async fn get_account_usage(account_id: String, state: State<'_, AppState>) -> Result<UsageSummary> {
     let mut manager = state.account_manager.lock().await;
     manager.get_account_usage(&account_id).await.map_err(Into::into)
+}
+
+/// 获取账号积分汇总（CN / WORK 优先积分体系，自动回退旧配额 UsageSummary）
+#[tauri::command]
+async fn get_account_credits(account_id: String, state: State<'_, AppState>) -> Result<CreditSummary> {
+    let mut manager = state.account_manager.lock().await;
+    manager.get_account_credits(&account_id).await.map_err(Into::into)
 }
 
 /// 更新账号 Token
@@ -278,6 +285,7 @@ pub fn run() {
             get_account,
             switch_account,
             get_account_usage,
+            get_account_credits,
             update_account_token,
             export_accounts,
             import_accounts,

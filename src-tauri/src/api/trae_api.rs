@@ -154,7 +154,7 @@ impl TraeApiClient {
         let mut last_error = anyhow!("所有 API 端点都失败");
 
         for base in endpoints.iter() {
-            let url = format!("{}/trae/api/v1/pay/user_current_entitlement_list", base);
+            let url = format!("{}/trae/api/v2/pay/user_current_entitlement_list", base);
 
             let response = self
                 .client
@@ -345,7 +345,7 @@ impl TraeApiClient {
 
     /// 获取用户配额和使用量
     pub async fn get_entitlement_list(&self) -> Result<EntitlementListResponse> {
-        let url = format!("{}/trae/api/v1/pay/user_current_entitlement_list", self.api_base);
+        let url = format!("{}/trae/api/v2/pay/user_current_entitlement_list", self.api_base);
         let headers = self.build_headers(true)?;
 
         let response = self
@@ -418,7 +418,7 @@ impl TraeApiClient {
         let mut last_error = anyhow!("所有 API 端点都失败");
 
         for base in endpoints.iter() {
-            let url = format!("{}/trae/api/v1/pay/user_current_entitlement_list", base);
+            let url = format!("{}/trae/api/v2/pay/user_current_entitlement_list", base);
             println!("[DEBUG] Trying API endpoint: {}", url);
 
             let response = self
@@ -562,5 +562,388 @@ impl TraeApiClient {
         }
 
         Ok(())
+    }
+
+    // ============================================================
+    // 国内版（CN / WORK）积分计费接口
+    // ============================================================
+
+    /// (辅助) 通过 Token 拉一次 v2 版 entitlement list，只在积分账号下才用到
+    async fn get_entitlement_list_v2_by_token(&self) -> Result<EntitlementListResponse> {
+        let headers = self.build_headers_token_only()?;
+        let endpoints_order: Vec<&str> = if self.api_base == API_BASE_CN {
+            vec![&self.api_base, API_BASE_SG, API_BASE_US]
+        } else {
+            vec![&self.api_base, API_BASE_CN, API_BASE_SG]
+        };
+        let mut last_err = anyhow!("所有 v2 entitlement 端点都失败");
+        for base in endpoints_order {
+            let url = format!("{}/trae/api/v2/pay/user_current_entitlement_list", base);
+            match self
+                .client
+                .post(&url)
+                .headers(headers.clone())
+                .json(&json!({"require_usage": true}))
+                .send()
+                .await
+            {
+                Ok(r) if r.status().is_success() => {
+                    let txt = r.text().await.unwrap_or_default();
+                    println!("[DEBUG] ===== RAW v2 entitlement JSON ({} chars) =====", txt.len());
+                    println!("[DEBUG] FULL_RESPONSE: {}", txt);
+                    match serde_json::from_str::<EntitlementListResponse>(&txt) {
+                        Ok(d) => return Ok(d),
+                        Err(e) => {
+                            println!("[WARN] 解析 v2 entitlement 失败: {}", e);
+                            last_err = anyhow!("解析 v2 entitlement 失败: {}", e);
+                        }
+                    }
+                }
+                Ok(r) => {
+                    let c = r.status().as_u16();
+                    let body = r.text().await.unwrap_or_default();
+                    if c == 401 {
+                        return Err(anyhow!("401 未授权（v2 entitlement 接口）"));
+                    }
+                    last_err = anyhow!("v2 entitlement HTTP {}: {}", c,
+                                       body.chars().take(300).collect::<String>());
+                }
+                Err(e) => { last_err = anyhow!("请求失败: {}", e); }
+            }
+        }
+        Err(last_err)
+    }
+
+    /// (辅助) 获取 web_user_pay_status — 用来拿 Free/Lite/Pro 计划名
+    async fn get_web_user_pay_status_by_token(&self) -> Result<WebUserPayStatusResponse> {
+        let headers = self.build_headers_token_only()?;
+        let endpoints_order: Vec<&str> = if self.api_base == API_BASE_CN {
+            vec![&self.api_base, API_BASE_SG, API_BASE_US]
+        } else {
+            vec![&self.api_base, API_BASE_CN, API_BASE_SG]
+        };
+        let mut last_err = anyhow!("所有 web_user_pay_status 端点都失败");
+        for base in endpoints_order {
+            let url = format!("{}/trae/api/v2/pay/web_user_pay_status", base);
+            match self
+                .client
+                .post(&url)
+                .headers(headers.clone())
+                .json(&json!({}))
+                .send()
+                .await
+            {
+                Ok(r) if r.status().is_success() => {
+                    let txt = r.text().await.unwrap_or_default();
+                    match serde_json::from_str::<WebUserPayStatusResponse>(&txt) {
+                        Ok(d) => return Ok(d),
+                        Err(e) => { last_err = anyhow!("解析 pay_status 失败: {}", e); }
+                    }
+                }
+                Ok(r) => {
+                    let c = r.status().as_u16();
+                    if c == 401 { return Err(anyhow!("401 未授权（pay_status 接口）")); }
+                    last_err = anyhow!("pay_status HTTP {}", c);
+                }
+                Err(e) => { last_err = anyhow!("请求失败: {}", e); }
+            }
+        }
+        Err(last_err)
+    }
+
+    /// 通过 Token 获取积分详情（对应官网 trae.cn/dashboard#usage 的总可用/通用/Work 专属/奖励）
+    ///
+    /// 调用链：
+    ///   1. POST /trae/api/v2/pay/cn_credits_billing_status  —  判断是否积分计费
+    ///   2. POST /trae/api/v2/pay/user_current_entitlement_list —  拿积分 pack 明细（total/used/end_time）
+    ///   3. POST /trae/api/v2/pay/web_user_pay_status —  拿计划名（Free / Lite / Pro）
+    ///
+    /// 若接口 1 返回 `is_credits_billing == false`，直接返回空 CreditSummary，
+    /// 调用方（account_manager）会回退显示旧 UsageSummary。
+    pub async fn get_credits_billing_status_by_token(&self) -> Result<CreditSummary> {
+        // ---------- Step 1: cn_credits_billing_status — 开关判断 ----------
+        let headers = self.build_headers_token_only()?;
+        let path = "/trae/api/v2/pay/cn_credits_billing_status";
+        let endpoints_order: Vec<&str> = if self.api_base == API_BASE_CN {
+            vec![&self.api_base, API_BASE_SG, API_BASE_US, API_BASE_UG]
+        } else if self.api_base == API_BASE_SG {
+            vec![&self.api_base, API_BASE_CN, API_BASE_US, API_BASE_UG]
+        } else {
+            vec![&self.api_base, API_BASE_CN, API_BASE_SG, API_BASE_US]
+        };
+
+        let mut billing_switch: Option<CreditsBillingStatusResponse> = None;
+        let mut last_err: anyhow::Error = anyhow!("所有 API 端点都失败（积分开关）");
+        for base in &endpoints_order {
+            let url = format!("{}{}", base, path);
+            println!("[DEBUG] Trying credits endpoint: {}", url);
+            match self.client.post(&url).headers(headers.clone())
+                .json(&json!({})).send().await
+            {
+                Ok(r) if r.status().is_success() => {
+                    let txt = r.text().await.unwrap_or_default();
+                    println!("[DEBUG] credits_billing_status raw response (first 3KB): {}",
+                             txt.chars().take(3000).collect::<String>());
+                    match serde_json::from_str::<CreditsBillingStatusResponse>(&txt) {
+                        Ok(raw) => { billing_switch = Some(raw); break; }
+                        Err(e) => {
+                            println!("[WARN] 解析 billing_switch 响应失败: {}", e);
+                            last_err = anyhow!("解析 billing_switch 失败: {}", e);
+                        }
+                    }
+                }
+                Ok(r) => {
+                    let code = r.status();
+                    let txt = r.text().await.unwrap_or_default();
+                    if code.as_u16() == 401 {
+                        return Err(anyhow!("401 未授权（积分接口）"));
+                    }
+                    last_err = anyhow!("积分接口 HTTP {}: {}", code,
+                                       txt.chars().take(300).collect::<String>());
+                }
+                Err(e) => { last_err = anyhow!("请求失败: {}", e); }
+            }
+        }
+        let switch = billing_switch.ok_or(last_err)?;
+        if !switch.is_credits_billing {
+            return Ok(CreditSummary {
+                is_credits_billing: false,
+                plan_name: switch.user_pay_identity_str.clone().unwrap_or_else(|| "Free".to_string()),
+                plan_expire_time: switch.plan_expire_time,
+                ..Default::default()
+            });
+        }
+
+        // ---------- Step 2: v2 entitlement list — 真正的积分数值 ----------
+        let entitlements = self.get_entitlement_list_v2_by_token().await?;
+        println!("[DEBUG] credits step2 OK: entitlement_packs.len = {}",
+                 entitlements.user_entitlement_pack_list.len());
+
+        // ---------- Step 3: web_user_pay_status — 拿 plan 名（最佳努力） ----------
+        let pay_status = match self.get_web_user_pay_status_by_token().await {
+            Ok(p) => {
+                println!("[DEBUG] credits step3 OK: user_pay_identity_str = {:?}",
+                         p.user_pay_identity_str);
+                Some(p)
+            }
+            Err(e) => {
+                println!("[WARN] 获取 pay_status 失败，忽略: {}", e);
+                None
+            }
+        };
+
+        // ---------- 聚合 ----------
+        let summary = Self::assemble_credit_summary_from_parts(
+            switch, entitlements, pay_status,
+        );
+        println!(
+            "[DEBUG] ===== CREDIT SUMMARY =====\n  is_credits_billing={}\n  plan_name={:?}\n  plan_expire={}\n  total_available={}\n  general: total={} used={} left={}\n  work:    total={} used={} left={}\n  reward_total_left={}\n  reward_entries={}",
+            summary.is_credits_billing,
+            summary.plan_name,
+            summary.plan_expire_time,
+            summary.total_available,
+            summary.general.total_limit, summary.general.used, summary.general.left,
+            summary.work_exclusive.total_limit, summary.work_exclusive.used, summary.work_exclusive.left,
+            summary.reward_total_left,
+            summary.reward_entries.len(),
+        );
+        for (i, r) in summary.reward_entries.iter().enumerate() {
+            println!("  reward[{}]: {:?} | total={} used={} scope={} expire={}",
+                     i, r.title, r.total, r.used, r.scope, r.expire_time);
+        }
+        Ok(summary)
+    }
+
+    /// 将 billing_switch + v2 entitlement_list + pay_status 拼成前端展示用的 CreditSummary
+    fn assemble_credit_summary_from_parts(
+        switch: CreditsBillingStatusResponse,
+        entitlements: EntitlementListResponse,
+        pay_status: Option<WebUserPayStatusResponse>,
+    ) -> CreditSummary {
+        // 打印 user_id 便于定位账号
+        let user_id = entitlements.user_entitlement_pack_list.first()
+            .map(|p| p.entitlement_base_info.user_id.clone())
+            .unwrap_or_else(|| "unknown".to_string());
+        println!("[DEBUG] ===== ASSEMBLE CREDIT SUMMARY for user_id={} ===== ({} packs)",
+            user_id, entitlements.user_entitlement_pack_list.len());
+        if !switch.is_credits_billing {
+            return CreditSummary {
+                is_credits_billing: false,
+                plan_name: pay_status.as_ref().map(|p| p.user_pay_identity_str.clone())
+                    .filter(|s| !s.trim().is_empty())
+                    .unwrap_or_else(|| {
+                        switch.user_pay_identity_str.clone().unwrap_or_else(|| "Free".to_string())
+                    }),
+                plan_expire_time: switch.plan_expire_time,
+                ..Default::default()
+            };
+        }
+
+        let mut general_total = 0.0f64;
+        let mut general_used  = 0.0f64;
+        let mut general_nearest_expire = 0i64;
+        let mut work_total    = 0.0f64;
+        let mut work_used     = 0.0f64;
+        let mut work_nearest_expire = 0i64;
+        let mut plan_end_time = 0i64;
+        let mut reward_entries: Vec<RewardCreditsEntry> = Vec::new();
+
+        for pack in &entitlements.user_entitlement_pack_list {
+            let base = &pack.entitlement_base_info;
+            let quota = &base.quota;
+            let usage = &pack.usage;
+            let limit = quota.credits_limit;
+            let used  = usage.credits_amount;
+
+            // status != 1 的 pack（比如未生效 / 已过期的免费兑换 pack 也显示，但不包含在主套餐里）
+            // 只统计 credits_limit > 0 且 is_hide == false 的条目
+            if limit <= 0.0 || pack.is_hide {
+                println!("[DEBUG] SKIP pack: pid={} desc={:?} limit={} is_hide={} status={}",
+                    base.product_id, pack.display_desc, limit, pack.is_hide, pack.status);
+                continue;
+            }
+
+            // 主套餐订阅（product_type == 0）的 end_time 作为 plan_expire_time
+            if base.product_type == 0 && pack.status == 1 {
+                if base.end_time > plan_end_time { plan_end_time = base.end_time; }
+            }
+
+            let scope = match base.available_endpoint {
+                0 => "general",          // 通用：TraeCode + TraeWork
+                1 => "work_exclusive",   // Work 专属
+                _ => "general",
+            };
+
+            println!(
+                "[DEBUG] pack: pid={} ptype={} avail_ep={} -> scope={} | credits_limit={} used={} left={} | status={} group_type={} is_hide={} desc={:?} end={}",
+                base.product_id, base.product_type, base.available_endpoint, scope,
+                limit, used, limit - used, pack.status, pack.group_type, pack.is_hide, pack.display_desc, base.end_time,
+            );
+
+            match scope {
+                "general" => {
+                    general_total += limit;
+                    general_used  += used;
+                    println!("[DEBUG]   -> general running: total={} used={} left={}",
+                        general_total, general_used, general_total - general_used);
+                    if base.end_time > 0 && (general_nearest_expire == 0 || base.end_time < general_nearest_expire) {
+                        general_nearest_expire = base.end_time;
+                    }
+                }
+                _ => {
+                    work_total += limit;
+                    work_used  += used;
+                    println!("[DEBUG]   -> work running: total={} used={} left={}",
+                        work_total, work_used, work_total - work_used);
+                    if base.end_time > 0 && (work_nearest_expire == 0 || base.end_time < work_nearest_expire) {
+                        work_nearest_expire = base.end_time;
+                    }
+                }
+            }
+
+            // 奖励 / 兑换 / 礼包类的 pack 生成奖励条目
+            let is_rewardish = base.product_type == 2      // 礼包/兑换
+                || pack.group_type == 4                    // 分组：奖励
+                || base.product_id >= 200;                 // 高 product_id 一般是活动积分
+            if is_rewardish {
+                reward_entries.push(RewardCreditsEntry {
+                    title: if pack.display_desc.trim().is_empty() {
+                        base.product_extra.package_extra.as_ref()
+                            .map(|p| p.package_name.clone())
+                            .filter(|s| !s.trim().is_empty())
+                            .unwrap_or_else(|| "积分礼包".to_string())
+                    } else {
+                        pack.display_desc.clone()
+                    },
+                    scope: scope.to_string(),
+                    total: limit,
+                    used,
+                    expire_time: base.end_time,
+                    sub_count: 1,
+                });
+            }
+        }
+
+        // 如果 v2 entitlements 本身也暴露了主 subscription 的 end_time 就用它，否则兜底
+        if plan_end_time == 0 {
+            // fallback: 取所有 pack 中的最大 end_time
+            if let Some(m) = entitlements.user_entitlement_pack_list.iter()
+                .map(|p| p.entitlement_base_info.end_time).max() { plan_end_time = m; }
+        }
+        if switch.plan_expire_time > 0 { plan_end_time = switch.plan_expire_time; }
+
+        let general_left = (general_total - general_used).max(0.0);
+        let work_left    = (work_total    - work_used).max(0.0);
+
+        let reward_total_left = reward_entries.iter()
+            .map(|e| (e.total - e.used).max(0.0)).sum::<f64>();
+
+        let plan_name = pay_status.as_ref()
+            .map(|p| p.user_pay_identity_str.clone())
+            .filter(|s| !s.trim().is_empty())
+            .or_else(|| switch.user_pay_identity_str.clone())
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or_else(|| if !switch.plan_name.trim().is_empty() {
+                switch.plan_name.clone()
+            } else { "Free".to_string() });
+
+        CreditSummary {
+            is_credits_billing: true,
+            plan_name,
+            plan_expire_time: plan_end_time,
+            total_available: general_left + work_left,
+            general: CreditsCategory {
+                total_limit: general_total,
+                used: general_used,
+                left: general_left,
+                nearest_expire_time: general_nearest_expire,
+            },
+            work_exclusive: CreditsCategory {
+                total_limit: work_total,
+                used: work_used,
+                left: work_left,
+                nearest_expire_time: work_nearest_expire,
+            },
+            reward_total_left,
+            reward_entries,
+        }
+    }
+
+    /// 旧解析函数保留兜底：当 billing_status 响应本身就带数值时使用（接口扩展的新字段未来生效时）
+    #[allow(dead_code)]
+    fn parse_credits_to_summary(raw: CreditsBillingStatusResponse) -> CreditSummary {
+        if !raw.is_credits_billing {
+            return CreditSummary {
+                is_credits_billing: false,
+                plan_name: raw.plan_name,
+                plan_expire_time: raw.plan_expire_time,
+                ..Default::default()
+            };
+        }
+        let fixup = |mut c: CreditsCategory| -> CreditsCategory {
+            if c.total_limit > 0.0 && c.left.abs() < f64::EPSILON {
+                c.left = (c.total_limit - c.used).max(0.0);
+            }
+            c
+        };
+        let general = fixup(raw.general_credits);
+        let work_exclusive = fixup(raw.work_exclusive_credits);
+        let (reward_total_left, reward_entries) = match raw.reward_credits {
+            Some(r) => (r.total_left, r.entries),
+            None => (0.0, Vec::new()),
+        };
+        let plan_name = if raw.plan_name.trim().is_empty() {
+            raw.user_pay_identity_str.clone().unwrap_or_else(|| "Free".to_string())
+        } else { raw.plan_name.clone() };
+        CreditSummary {
+            is_credits_billing: true,
+            plan_name,
+            plan_expire_time: raw.plan_expire_time,
+            total_available: general.left + work_exclusive.left,
+            general,
+            work_exclusive,
+            reward_total_left,
+            reward_entries,
+        }
     }
 }

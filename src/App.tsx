@@ -14,11 +14,12 @@ import { Settings } from "./pages/Settings";
 import { About } from "./pages/About";
 import { useToast } from "./hooks/useToast";
 import * as api from "./api";
-import type { AccountBrief, UsageSummary } from "./types";
+import type { AccountBrief, CreditSummary, UsageSummary } from "./types";
 import "./App.css";
 
 interface AccountWithUsage extends AccountBrief {
   usage?: UsageSummary | null;
+  credits?: CreditSummary | null;
 }
 
 type ViewMode = "grid" | "list";
@@ -78,64 +79,98 @@ function App() {
     onConfirm: () => void;
   } | null>(null);
 
-  // 加载账号列表（先显示列表，再后台加载使用量）
-  const loadAccounts = useCallback(async () => {
+  // 加载账号列表（先显示列表，再后台加载使用量 + 积分）
+  // 增加重试机制：Tauri 初始化可能需要时间，首次调用失败时自动重试
+  const loadAccounts = useCallback(async (retries = 2): Promise<void> => {
     setLoading(true);
     try {
       const list = await api.getAccounts();
 
-      // 先立即显示账号列表（不等待使用量加载）
-      setAccounts(list.map((account) => ({ ...account, usage: undefined })));
+      setAccounts(list.map((account) => ({ ...account, usage: undefined, credits: undefined })));
       setLoading(false);
 
-      // 后台并行加载使用量
+      // 后台并行加载：使用量（旧配额） + 新积分汇总
       if (list.length > 0) {
-        const usageResults = await Promise.allSettled(
-          list.map((account) => api.getAccountUsage(account.id))
-        );
+        const [usageResults, creditsResults] = await Promise.all([
+          Promise.allSettled(list.map((account) => api.getAccountUsage(account.id))),
+          Promise.allSettled(list.map((account) => api.getAccountCredits(account.id))),
+        ]);
 
         setAccounts((prev) =>
           prev.map((account, index) => {
-            const result = usageResults[index];
+            const u = usageResults[index];
+            const c = creditsResults[index];
             return {
               ...account,
-              usage: result.status === 'fulfilled' ? result.value : null
+              usage: u.status === 'fulfilled' ? u.value : null,
+              credits: c.status === 'fulfilled' ? c.value : null,
             };
           })
         );
       }
     } catch (err: any) {
-      setError(err.message || "加载账号失败");
-      setLoading(false);
+      console.error("[ERROR] loadAccounts failed:", err);
+      if (retries > 0) {
+        console.log(`[INFO] Retrying loadAccounts (${retries} retries left)...`);
+        setTimeout(() => loadAccounts(retries - 1), 500);
+      } else {
+        setError(err.message || "加载账号失败");
+        setLoading(false);
+      }
     }
   }, []);
 
-  // 初始加载
+  // 初始化加载：等待 Tauri 就绪后加载账号
+  // 顺序：等待 Tauri → 加载账号 → 刷新 Token → 重新加载
   useEffect(() => {
-    loadAccounts();
-  }, [loadAccounts]);
+    let cancelled = false;
 
-  // 自动刷新即将过期的 Token
-  useEffect(() => {
-    // 启动时刷新
-    api.refreshAllTokens().then((refreshed) => {
-      if (refreshed.length > 0) {
-        console.log(`[INFO] 启动时自动刷新了 ${refreshed.length} 个 Token`);
-        loadAccounts();
+    const init = async () => {
+      // 等待 Tauri 就绪（最多 3 秒）
+      for (let i = 0; i < 30; i++) {
+        if (cancelled) return;
+        if (api.hasTauri()) break;
+        await new Promise((r) => setTimeout(r, 100));
       }
-    }).catch(console.error);
 
-    // 每30分钟刷新一次
-    const interval = setInterval(() => {
-      api.refreshAllTokens().then((refreshed) => {
+      if (cancelled) return;
+
+      // 加载账号列表
+      await loadAccounts();
+
+      if (cancelled) return;
+
+      // 刷新即将过期的 Token，如果有刷新则重新加载
+      try {
+        const refreshed = await api.refreshAllTokens();
+        if (refreshed.length > 0 && !cancelled) {
+          console.log(`[INFO] 启动时自动刷新了 ${refreshed.length} 个 Token`);
+          await loadAccounts();
+        }
+      } catch (e) {
+        console.warn("[WARN] refreshAllTokens failed on startup:", e);
+      }
+    };
+
+    init();
+
+    // 定时刷新 Token（每 30 分钟）
+    const interval = setInterval(async () => {
+      try {
+        const refreshed = await api.refreshAllTokens();
         if (refreshed.length > 0) {
           console.log(`[INFO] 定时自动刷新了 ${refreshed.length} 个 Token`);
-          loadAccounts();
+          await loadAccounts();
         }
-      }).catch(console.error);
+      } catch (e) {
+        console.warn("[WARN] 定时刷新 Token 失败:", e);
+      }
     }, 30 * 60 * 1000);
 
-    return () => clearInterval(interval);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
   }, [loadAccounts]);
 
   // 添加账号
@@ -180,9 +215,12 @@ function App() {
     setRefreshingIds((prev) => new Set(prev).add(accountId));
 
     try {
-      const usage = await api.getAccountUsage(accountId);
+      const [usage, credits] = await Promise.all([
+        api.getAccountUsage(accountId),
+        api.getAccountCredits(accountId).catch(() => null),
+      ]);
       setAccounts((prev) =>
-        prev.map((a) => (a.id === accountId ? { ...a, usage } : a))
+        prev.map((a) => (a.id === accountId ? { ...a, usage, credits } : a))
       );
       addToast("success", "数据刷新成功");
     } catch (err: any) {
@@ -302,10 +340,16 @@ function App() {
     }
   };
 
-  // 获取礼包
+  // 获取礼包（仅国际版有效；国内版积分体系已无"礼包"概念，直接给提示不请求后端）
   const handleClaimGift = async (accountId: string) => {
     const account = accounts.find((a) => a.id === accountId);
     if (!account) return;
+
+    // 国内版 CN / WORK：credits.is_credits_billing=true → 隐藏此功能
+    if (account.credits?.is_credits_billing) {
+      addToast("info", "当前账号为积分体系（CN / WORK），无礼包可领取。若想获得更多积分请前往官网兑换码/签到/邀请奖励。");
+      return;
+    }
 
     setConfirmModal({
       isOpen: true,
@@ -522,23 +566,32 @@ function App() {
     });
   };
 
-  // 批量刷新选中账号（优化：并行处理，添加进度反馈）
+  // 批量刷新账号：同时刷新 usage（旧配额）+ credits（新积分）
+  // - 无选中：刷新全部账号
+  // - 有选中：刷新选中账号
+  // 底层复用 handleRefreshAccount 的数据范围（usage + credits），保持一致
   const handleBatchRefresh = async () => {
-    if (selectedIds.size === 0) {
-      addToast("warning", "请先选择要刷新的账号");
+    const ids = selectedIds.size > 0
+      ? Array.from(selectedIds)
+      : accounts.map((a) => a.id);
+
+    if (ids.length === 0) {
+      addToast("warning", "暂无账号可刷新");
       return;
     }
 
-    const ids = Array.from(selectedIds);
     addToast("info", `正在刷新 ${ids.length} 个账号...`);
 
-    // 并行刷新所有选中的账号
+    // 并行刷新（底层与 handleRefreshAccount 一致：usage + credits）
     const results = await Promise.allSettled(
       ids.map(async (id) => {
         try {
-          const usage = await api.getAccountUsage(id);
+          const [usage, credits] = await Promise.all([
+            api.getAccountUsage(id),
+            api.getAccountCredits(id).catch(() => null),
+          ]);
           setAccounts((prev) =>
-            prev.map((a) => (a.id === id ? { ...a, usage } : a))
+            prev.map((a) => (a.id === id ? { ...a, usage, credits } : a))
           );
           return { id, success: true };
         } catch (err: any) {
@@ -720,14 +773,18 @@ function App() {
                       />
                       全选 ({selectedIds.size}/{accounts.length})
                     </label>
+                    <button
+                      className="batch-btn"
+                      onClick={handleBatchRefresh}
+                      title={selectedIds.size > 0 ? `刷新选中的 ${selectedIds.size} 个账号` : "刷新全部账号"}
+                    >
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="14" height="14">
+                        <path d="M23 4v6h-6M1 20v-6h6M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>
+                      </svg>
+                      {selectedIds.size > 0 ? `刷新选中 (${selectedIds.size})` : "刷新全部"}
+                    </button>
                     {selectedIds.size > 0 && (
                       <div className="batch-actions">
-                        <button className="batch-btn" onClick={handleBatchRefresh}>
-                          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="14" height="14">
-                            <path d="M23 4v6h-6M1 20v-6h6M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>
-                          </svg>
-                          刷新
-                        </button>
                         <button className="batch-btn danger" onClick={handleBatchDelete}>
                           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="14" height="14">
                             <path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
@@ -766,6 +823,19 @@ function App() {
                         </svg>
                       </button>
                     </div>
+                    <div className="toolbar-help">
+                      <div className="help-tooltip">
+                        <div className="help-tooltip-title">💡 快捷操作</div>
+                        <div className="help-tooltip-item"><kbd>右键</kbd> 打开更多操作菜单</div>
+                        <div className="help-tooltip-item"><kbd>双击</kbd> 查看账号详情</div>
+                        <div className="help-tooltip-item"><kbd>Ctrl+A</kbd> 全选账号</div>
+                      </div>
+                      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                        <circle cx="12" cy="12" r="10"/>
+                        <path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/>
+                        <line x1="12" y1="17" x2="12.01" y2="17"/>
+                      </svg>
+                    </div>
                   </div>
                 </div>
               )}
@@ -796,32 +866,26 @@ function App() {
                       key={account.id}
                       account={account}
                       usage={account.usage || null}
+                      credits={account.credits || null}
                       selected={selectedIds.has(account.id)}
                       onSelect={handleSelectAccount}
                       onContextMenu={handleContextMenu}
+                      onViewDetail={handleViewDetail}
                     />
                   ))}
                 </div>
               ) : (
                 <div className="account-list">
-                  <div className="list-header">
-                    <div className="list-col checkbox"></div>
-                    <div className="list-col avatar"></div>
-                    <div className="list-col info">账号信息</div>
-                    <div className="list-col plan">套餐</div>
-                    <div className="list-col usage">使用量</div>
-                    <div className="list-col reset">重置时间</div>
-                    <div className="list-col status">状态</div>
-                    <div className="list-col actions"></div>
-                  </div>
                   {accounts.map((account) => (
                     <AccountListItem
                       key={account.id}
                       account={account}
                       usage={account.usage || null}
+                      credits={account.credits || null}
                       selected={selectedIds.has(account.id)}
                       onSelect={handleSelectAccount}
                       onContextMenu={handleContextMenu}
+                      onViewDetail={handleViewDetail}
                     />
                   ))}
                 </div>
@@ -930,6 +994,7 @@ function App() {
             setContextMenu(null);
           }}
           isCurrent={accounts.find(a => a.id === contextMenu.accountId)?.is_current || false}
+          showClaimGift={!accounts.find(a => a.id === contextMenu.accountId)?.credits?.is_credits_billing}
         />
       )}
 
@@ -948,6 +1013,7 @@ function App() {
         onClose={() => setDetailAccount(null)}
         account={detailAccount}
         usage={detailAccount?.usage || null}
+        credits={detailAccount?.credits || null}
       />
 
       {/* 更新 Token 弹窗 */}

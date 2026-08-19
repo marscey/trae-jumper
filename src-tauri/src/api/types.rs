@@ -107,11 +107,35 @@ pub struct UserInfoResult {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EntitlementListResponse {
     pub is_pay_freshman: bool,
+    #[serde(default)]
+    pub is_credits_billing: bool,
+    #[serde(default)]
+    pub is_dollar_usage_billing: bool,
+    #[serde(default)]
+    pub trial_status: Option<TrialStatus>,
     pub user_entitlement_pack_list: Vec<EntitlementPack>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct TrialStatus {
+    #[serde(default)]
+    pub is_eligible_for_trial: bool,
+    #[serde(default)]
+    pub is_in_trial: bool,
+    #[serde(default)]
+    pub trial_end_time: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EntitlementPack {
+    #[serde(default)]
+    pub display_desc: String,
+    #[serde(default)]
+    pub group_name: String,
+    #[serde(default)]
+    pub group_type: i32,
+    #[serde(default)]
+    pub is_hide: bool,
     pub entitlement_base_info: EntitlementBaseInfo,
     pub expire_time: i64,
     pub is_last_period: bool,
@@ -124,6 +148,8 @@ pub struct EntitlementPack {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EntitlementBaseInfo {
+    #[serde(default)]
+    pub available_endpoint: i32,
     pub charge_amount: i64,
     pub currency: i32,
     pub end_time: i64,
@@ -146,9 +172,15 @@ pub struct ProductExtra {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PackageExtra {
+    #[serde(default)]
     pub duration: i32,
+    #[serde(default)]
     pub package_duration_type: i32,
+    #[serde(default)]
+    pub package_name: String,
+    #[serde(default)]
     pub package_source_type: i32,
+    #[serde(default)]
     pub quota: Quota,
 }
 
@@ -158,29 +190,71 @@ pub struct SubscriptionExtra {
     pub quota: Quota,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Quota {
+    #[serde(default)]
+    pub credits_limit: f64,
+    #[serde(default)]
     pub advanced_model_request_limit: i64,
+    #[serde(default)]
     pub auto_completion_limit: i64,
+    #[serde(default)]
+    pub basic_usage_limit: i64,
+    #[serde(default)]
+    pub bonus_usage_limit: i64,
+    #[serde(default)]
+    pub enable_early_access: bool,
+    #[serde(default)]
+    pub enable_ralph_loop: bool,
+    #[serde(default)]
+    pub enable_solo_agent: bool,
+    #[serde(default)]
     pub enable_solo_builder: bool,
     #[serde(default)]
     pub enable_solo_builder_v1: bool,
+    #[serde(default)]
     pub enable_solo_coder: bool,
+    #[serde(default)]
+    pub enable_solo_lite: bool,
+    #[serde(default)]
+    pub enable_solo_web: bool,
+    #[serde(default)]
     pub enable_super_model: bool,
+    #[serde(default)]
+    pub no_bonus_quota: bool,
+    #[serde(default)]
     pub premium_model_fast_request_limit: i64,
+    #[serde(default)]
     pub premium_model_slow_request_limit: i64,
+    #[serde(default)]
+    pub solo_agent_parallel_limit: i32,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct UsageInfo {
+    #[serde(default)]
+    pub credits_amount: f64,
+    #[serde(default)]
     pub advanced_model_amount: f64,
+    #[serde(default)]
     pub advanced_model_request_usage: f64,
+    #[serde(default)]
     pub auto_completion_amount: f64,
+    #[serde(default)]
     pub auto_completion_usage: f64,
+    #[serde(default)]
+    pub basic_usage_amount: f64,
+    #[serde(default)]
+    pub bonus_usage_amount: f64,
+    #[serde(default)]
     pub is_flash_consuming: bool,
+    #[serde(default)]
     pub premium_model_fast_amount: f64,
+    #[serde(default)]
     pub premium_model_fast_request_usage: f64,
+    #[serde(default)]
     pub premium_model_slow_amount: f64,
+    #[serde(default)]
     pub premium_model_slow_request_usage: f64,
 }
 
@@ -271,3 +345,164 @@ impl Default for UsageSummary {
         }
     }
 }
+
+// ========================================================================
+// 国内版（CN / WORK）积分体系 — 对应 https://www.trae.cn/dashboard#usage
+// ========================================================================
+
+/// 单个积分分类的额度/已用/剩余/最近到期
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct CreditsCategory {
+    /// 总额度
+    #[serde(default, alias = "totalLimit", alias = "total_limit")]
+    pub total_limit: f64,
+    /// 已用
+    #[serde(default)]
+    pub used: f64,
+    /// 剩余
+    #[serde(default, alias = "remaining")]
+    pub left: f64,
+    /// 最近一笔到期时间（UTC epoch sec，0 表示无到期或永久）
+    #[serde(default, alias = "nearestExpireTime", alias = "nearest_expire_time")]
+    pub nearest_expire_time: i64,
+}
+
+/// 奖励积分条目：按标题/类型/到期/进度/子笔数展示
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct RewardCreditsEntry {
+    /// 标题，如 "每月登录赠送" / "老用户福利" / "每日签到" / "套餐 Lite 会员积分" / "邀请奖励"
+    #[serde(default, alias = "name")]
+    pub title: String,
+    /// 适用范围：general / work_exclusive
+    #[serde(default, alias = "type")]
+    pub scope: String,
+    /// 总发放额度
+    #[serde(default)]
+    pub total: f64,
+    /// 已用
+    #[serde(default)]
+    pub used: f64,
+    /// 到期 epoch sec
+    #[serde(default, alias = "expireTime", alias = "expire_time")]
+    pub expire_time: i64,
+    /// 多条目合并时的子笔数（如"共 10 笔"签到）
+    #[serde(default, alias = "subCount", alias = "sub_count")]
+    pub sub_count: i64,
+}
+
+/// 奖励积分汇总
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct RewardCredits {
+    /// 奖励积分总剩余
+    #[serde(default, alias = "totalLeft", alias = "total_left")]
+    pub total_left: f64,
+    /// 所有奖励条目
+    #[serde(default, alias = "items")]
+    pub entries: Vec<RewardCreditsEntry>,
+}
+
+/// 积分主状态接口（cn_credits_billing_status）的原始响应封装
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreditsBillingStatusResponse {
+    #[serde(default)]
+    pub code: i32,
+    #[serde(default)]
+    pub message: Option<String>,
+    /// true = 当前账号使用积分计费；false = 仍走旧 entitlement 配额（国际版/老账号）
+    #[serde(default, alias = "isCreditsBilling", alias = "is_credits_billing")]
+    pub is_credits_billing: bool,
+    #[serde(default, alias = "shouldForceSwitch", alias = "should_force_switch")]
+    pub should_force_switch: bool,
+
+    /// 通用积分（TraeCode + TraeWork）
+    #[serde(default, alias = "generalCredits", alias = "general_credits")]
+    pub general_credits: CreditsCategory,
+    /// Work 专属积分
+    #[serde(default, alias = "workExclusiveCredits", alias = "work_exclusive_credits")]
+    pub work_exclusive_credits: CreditsCategory,
+    /// 会员积分小计（可选）
+    #[serde(default, alias = "membershipCredits", alias = "membership_credits")]
+    pub membership_credits: Option<CreditsCategory>,
+    /// 奖励积分合计 + 明细
+    #[serde(default, alias = "rewardCredits", alias = "reward_credits")]
+    pub reward_credits: Option<RewardCredits>,
+
+    /// 主套餐有效期结束时间（UTC epoch sec）
+    #[serde(default, alias = "planExpireTime", alias = "plan_expire_time")]
+    pub plan_expire_time: i64,
+    /// 当前套餐：Free / Lite / Pro / Pro+ / Ultra
+    #[serde(default, alias = "planName", alias = "plan_name")]
+    pub plan_name: String,
+    /// 订阅/商业化身份兜底字段（从 web_user_pay_status 拿更准，这里做备份）
+    #[serde(default, alias = "userPayIdentityStr", alias = "user_pay_identity_str")]
+    pub user_pay_identity_str: Option<String>,
+}
+
+/// 网页版 "支付状态" 接口的原始响应（用来拿 Free/Pro 计划名和是否积分计费）
+///
+/// 路径：POST /trae/api/v2/pay/web_user_pay_status
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct WebUserPayStatusResponse {
+    #[serde(default)]
+    pub code: i32,
+    #[serde(default)]
+    pub message: Option<String>,
+
+    #[serde(default)]
+    pub is_credits_billing: bool,
+    #[serde(default)]
+    pub is_dollar_usage_billing: bool,
+    #[serde(default)]
+    pub is_pay_freshman: bool,
+    #[serde(default)]
+    pub server_time_ms: i64,
+    #[serde(default, alias = "userPayIdentity", alias = "user_pay_identity")]
+    pub user_pay_identity: i32,
+    #[serde(default, alias = "userPayIdentityStr", alias = "user_pay_identity_str")]
+    pub user_pay_identity_str: String,
+
+    // 功能开关
+    #[serde(default)]
+    pub enable_fission: bool,
+    #[serde(default)]
+    pub enable_solo_builder: bool,
+    #[serde(default)]
+    pub enable_solo_coder: bool,
+    #[serde(default)]
+    pub enable_solo_lite: bool,
+    #[serde(default)]
+    pub enable_solo_web: bool,
+}
+
+/// 给前端展示用的简化积分汇总。
+/// 当 `is_credits_billing == false` 时前端应回退显示旧 `UsageSummary`。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreditSummary {
+    pub is_credits_billing: bool,
+    pub plan_name: String,
+    pub plan_expire_time: i64,
+    /// 大号总可用积分：通用剩余 + Work 专属剩余
+    pub total_available: f64,
+    pub general: CreditsCategory,
+    pub work_exclusive: CreditsCategory,
+    /// 奖励积分剩余合计
+    pub reward_total_left: f64,
+    /// 奖励积分条目（用于"每月登录赠送 / 老用户福利 / 签到 / 邀请…"列表）
+    pub reward_entries: Vec<RewardCreditsEntry>,
+}
+
+impl Default for CreditSummary {
+    fn default() -> Self {
+        Self {
+            is_credits_billing: false,
+            plan_name: "Free".to_string(),
+            plan_expire_time: 0,
+            total_available: 0.0,
+            general: CreditsCategory::default(),
+            work_exclusive: CreditsCategory::default(),
+            reward_total_left: 0.0,
+            reward_entries: Vec::new(),
+        }
+    }
+}
+

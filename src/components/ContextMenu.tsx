@@ -12,6 +12,7 @@ interface ContextMenuProps {
   onClaimGift: () => void;
   onDelete: () => void;
   isCurrent?: boolean; // 是否是当前使用的账号
+  showClaimGift?: boolean; // 是否显示"获取礼包"（CN/WORK 积分体系下隐藏）
 }
 
 export function ContextMenu({
@@ -26,6 +27,7 @@ export function ContextMenu({
   onClaimGift,
   onDelete,
   isCurrent = false,
+  showClaimGift = true,
 }: ContextMenuProps) {
   const menuRef = useRef<HTMLDivElement>(null);
 
@@ -76,10 +78,12 @@ export function ContextMenu({
           <span className="icon">{isCurrent ? "✓" : "🔀"}</span>
           {isCurrent ? "当前使用中" : "切换账号"}
         </div>
-        <div className="context-menu-item" onClick={onClaimGift}>
-          <span className="icon">🎁</span>
-          获取礼包
-        </div>
+        {showClaimGift && (
+          <div className="context-menu-item" onClick={onClaimGift}>
+            <span className="icon">🎁</span>
+            获取礼包
+          </div>
+        )}
         <div className="context-menu-divider" />
         <div className="context-menu-item danger" onClick={onDelete}>
           <span className="icon">🗑</span>
