@@ -6,7 +6,7 @@
 
 Trae CN / TRAE WORK / 国际版 Trae 多账号管理小工具
 
-[![Version](https://img.shields.io/badge/version-0.9.7-blue?style=flat-square)](https://github.com/marscey/trae-jumper/releases)
+[![Version](https://img.shields.io/badge/version-0.9.9-blue?style=flat-square)](https://github.com/marscey/trae-jumper/releases)
 [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS-lightgrey?style=flat-square)](#-系统要求)
 [![Build](https://img.shields.io/github/actions/workflow/status/marscey/trae-jumper/build.yml?style=flat-square)](https://github.com/marscey/trae-jumper/actions)
 [![License](https://img.shields.io/badge/license-MIT-orange?style=flat-square)](#-免责声明)
@@ -29,11 +29,15 @@ TraeJumper 是一款面向 Trae 系列 IDE 用户的多账号管理桌面工具�
 - 通过 Token 添加账号，自动获取账号信息并绑定机器码
 - 一键切换账号：自动关闭 Trae → 清除旧登录态 → 写入新账号 → 重新打开
 - 支持更新 Token、删除账号、查看详情、复制账号信息
+- **点击用户名**可直接打开账号详情弹窗（无需右键）
+- **批量操作**：选中多个账号后可批量刷新、批量删除、切换账号（单选）
 
 **使用量监控**
 
 - 实时展示每个账号的今日/总使用量与剩余额度
 - 查看详细使用事件，按时间范围筛选，展示 Token 数量与模型信息
+- **积分体系支持**：自动识别 Trae CN / TRAE WORK 的积分计费模式，展示通用积分、Work 专属积分、奖励积分（每月登录赠送/老用户福利等）的总额、已用、剩余与到期时间
+- **到期预警**：积分到期日期按紧急程度分色显示（红色=0-3天/已过期，橙色=4-7天，灰色=安全），最近到期与最后到期分别展示
 
 **机器码管理**
 
@@ -127,7 +131,8 @@ npm run tauri build
 
 ### 5. 查看使用量
 
-- **仪表板**：查看所有账号的使用量概览（今日/总量/进度条）
+- **仪表板**：欢迎横幅 + 客户端徽章 + 统计卡片（总积分/配额、已使用、剩余可用、平均剩余）+ 使用量分布饼图 + 套餐分布饼图 + 账号概览预览
+- **账号列表**：每张卡片/列表项底部展示积分到期信息（`X积分将于[日期]到期` + `最后到期 [日期]`），按紧急程度分色预警
 - **详情页**：切换至 **使用记录** 标签，查看每次使用的时间、Token 数量、模型与请求类型
 
 ### 6. 管理机器码
@@ -145,7 +150,7 @@ npm run tauri build
 
 ## 🛠️ 技术栈
 
-- **前端**：React 18 / TypeScript / Vite / CSS3
+- **前端**：React 19 / TypeScript / Vite 7 / Recharts 3 / lucide-react
 - **后端**：Tauri 2 / Rust / Tokio / Reqwest / Serde
 - **加密**：AES-128-CBC + SHA-512
 - **平台**：Windows（NSIS/MSI）、macOS（DMG）
