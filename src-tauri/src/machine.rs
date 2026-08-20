@@ -283,6 +283,14 @@ pub fn save_trae_path(_path: &str) -> Result<()> {
     Err(anyhow!("此功能仅支持 Windows 和 macOS 系统"))
 }
 
+/// 清除保存的 Trae IDE 路径（切换目标客户端且扫描不到新路径时调用，避免串用旧客户端路径）
+pub fn clear_saved_trae_path() -> Result<()> {
+    let config_path = get_trae_config_path()?;
+    fs::write(&config_path, "")?;
+    println!("[INFO] 已清除保存的 Trae IDE 路径");
+    Ok(())
+}
+
 /// 自动扫描 Trae IDE 安装路径
 #[cfg(target_os = "windows")]
 pub fn scan_trae_path() -> Result<String> {
