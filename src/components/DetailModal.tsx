@@ -233,167 +233,141 @@ export function DetailModal({ isOpen, onClose, account, usage, credits }: Detail
               <>
                 {/* Hero: 总可用积分 + 子类别合并 */}
                 <div className="credit-hero">
+                  <div className="credit-section-title">
+                    <span className="credit-section-title-bar"></span>
+                    积分总览
+                  </div>
                   <div className="credit-hero-top">
-                    <div className="credit-hero-label">
-                      <svg width="16" height="16" viewBox="0 0 24  24" fill="none" stroke="currentColor" strokeWidth="2">
-                        <circle cx="12" cy="12" r="10"/>
-                        <line x1="12" y1="8" x2="12" y2="12"/>
-                        <line x1="12" y1="16" x2="12.01" y2="16"/>
-                      </svg>
-                      总可用积分
-                    </div>
                     <div className="credit-hero-value">
                       <span className="credit-hero-icon">✦</span>
-                      {formatNumber(credits.total_available)}
-                      <span className="credit-hero-sub-total" style={{ fontSize: 18, fontWeight: 500, marginLeft: 4 }}>
+                      <span className="credit-hero-left">{formatNumber(credits.total_available)}</span>
+                      <span className="credit-hero-sub-total">
                         / {formatNumber((credits.general?.total_limit ?? 0) + (credits.work_exclusive?.total_limit ?? 0))}
                       </span>
                     </div>
-                  </div>
-                  <div className="credit-hero-split">
-                    <div className="credit-hero-sub">
-                      <div className="credit-hero-sub-label">通用积分</div>
-                      <div className="credit-hero-sub-value">
-                        {formatNumber(credits.general?.left ?? 0)}
-                        <span className="credit-hero-sub-total"> / {formatNumber(credits.general?.total_limit ?? 0)}</span>
-                      </div>
-                    </div>
-                    <div className="credit-hero-divider"></div>
-                    <div className="credit-hero-sub">
-                      <div className="credit-hero-sub-label">Work 专属积分</div>
-                      <div className="credit-hero-sub-value">
-                        {formatNumber(credits.work_exclusive?.left ?? 0)}
-                        <span className="credit-hero-sub-total"> / {formatNumber(credits.work_exclusive?.total_limit ?? 0)}</span>
-                      </div>
+                    <div className="credit-hero-used">
+                      <span className="credit-hero-used-label">已使用</span>
+                      <span className="credit-hero-used-value">
+                        {formatNumber((credits.general?.used ?? 0) + (credits.work_exclusive?.used ?? 0))}
+                      </span>
                     </div>
                   </div>
-                </div>
+                  {/* 两类积分详情：合并展示，每类一个紧凑卡片，含剩余/总量/已使用 */}
+                  <div className="credit-hero-details">
+                    <div className="credit-type-card">
+                      <div className="credit-type-header">
+                        <span className="credit-type-title">通用积分</span>
+                      </div>
+                      <div className="credit-type-main">
+                        <span className="credit-type-left">{formatNumber(credits.general?.left ?? 0)}</span>
+                        <span className="credit-type-total"> / {formatNumber(credits.general?.total_limit ?? 0)}</span>
+                      </div>
+                      <div className="credit-type-sub">
+                        <span className="credit-type-sub-label">已使用</span>
+                        <span className="credit-type-sub-value">{formatNumber(credits.general?.used ?? 0)}</span>
+                      </div>
+                    </div>
+                    <div className="credit-type-divider"></div>
+                    <div className="credit-type-card">
+                      <div className="credit-type-header">
+                        <span className="credit-type-title">Work 专属积分</span>
+                      </div>
+                      <div className="credit-type-main">
+                        <span className="credit-type-left">{formatNumber(credits.work_exclusive?.left ?? 0)}</span>
+                        <span className="credit-type-total"> / {formatNumber(credits.work_exclusive?.total_limit ?? 0)}</span>
+                      </div>
+                      <div className="credit-type-sub">
+                        <span className="credit-type-sub-label">已使用</span>
+                        <span className="credit-type-sub-value">{formatNumber(credits.work_exclusive?.used ?? 0)}</span>
+                      </div>
+                    </div>
+                  </div>
 
-                {/* 奖励积分明细 */}
-                {groupedRewards && groupedRewards.length > 0 ? (
-                  <div className="credit-reward-section">
-                    <h3 className="credit-reward-title">奖励积分</h3>
-                    <div className="credit-reward-list">
-                      {groupedRewards.map((group) => {
-                        if (!group.isGroup) {
-                          const e = group.items[0];
-                          const left = Math.max(0, (e.total ?? 0) - (e.used ?? 0));
-                          const isEmpty = left <= 0;
-                          const scopeLabel = e.scope === 'work_exclusive' ? 'Work 专属积分' : '通用积分';
-                          const expireStr = e.expire_time ? formatDate(e.expire_time) : '';
-                          return (
-                            <div key={group.key} className={`credit-reward-item ${isEmpty ? 'is-empty' : ''}`}>
-                              <div className="credit-reward-info">
-                                <div className="credit-reward-name">{e.title}</div>
-                                <div className="credit-reward-meta">
-                                  {scopeLabel}
-                                  {expireStr ? ` · ${expireStr}到期` : ''}
+                  {/* 奖励积分明细：合并进 hero 卡片内，使用虚线子分隔区分层级 */}
+                  {groupedRewards && groupedRewards.length > 0 ? (
+                    <div className="credit-reward-section">
+                      <div className="credit-section-title">
+                        <span className="credit-section-title-bar"></span>
+                        奖励积分
+                      </div>
+                      <div className="credit-reward-list">
+                        {groupedRewards.map((group) => {
+                          if (!group.isGroup) {
+                            const e = group.items[0];
+                            const left = Math.max(0, (e.total ?? 0) - (e.used ?? 0));
+                            const isEmpty = left <= 0;
+                            const scopeLabel = e.scope === 'work_exclusive' ? 'Work 专属积分' : '通用积分';
+                            const expireStr = e.expire_time ? formatDate(e.expire_time) : '';
+                            return (
+                              <div key={group.key} className={`credit-reward-item ${isEmpty ? 'is-empty' : ''}`}>
+                                <div className="credit-reward-info">
+                                  <div className="credit-reward-name">{e.title}</div>
+                                  <div className="credit-reward-meta">
+                                    {scopeLabel}
+                                    {expireStr ? ` · ${expireStr}到期` : ''}
+                                  </div>
+                                </div>
+                                <div className="credit-reward-amount">
+                                  {formatNumber(left)} / {formatNumber(e.total)}
                                 </div>
                               </div>
-                              <div className="credit-reward-amount">
-                                {formatNumber(left)} / {formatNumber(e.total)}
+                            );
+                          }
+                          const isOpen = !!expandedGroups[group.key];
+                          const totalLeft = group.items.reduce((s, e) => s + Math.max(0, (e.total ?? 0) - (e.used ?? 0)), 0);
+                          const isAllEmpty = totalLeft <= 0;
+                          const firstItem = group.items[0];
+                          const scopeLabel = firstItem.scope === 'work_exclusive' ? 'Work 专属积分' : '通用积分';
+                          const expireStr = firstItem.expire_time ? formatDate(firstItem.expire_time) : '';
+                          return (
+                            <div key={group.key} className={`credit-reward-group ${isAllEmpty ? 'is-empty' : ''}`}>
+                              <div
+                                className="credit-reward-group-header"
+                                onClick={() => toggleGroup(group.key)}
+                              >
+                                <div className="credit-reward-info">
+                                  <div className="credit-reward-name">{group.title} <span className="credit-reward-count">· 共 {group.items.length} 笔</span></div>
+                                  <div className="credit-reward-meta">
+                                    {scopeLabel}
+                                    {expireStr ? ` · ${expireStr}到期` : ''}
+                                  </div>
+                                </div>
+                                <div className="credit-reward-amount">
+                                  {formatNumber(totalLeft)} / {formatNumber(group.items.reduce((s, e) => s + (e.total ?? 0), 0))}
+                                  <span className={`credit-reward-chevron ${isOpen ? 'open' : ''}`}>
+                                    <svg width="14" height="14" viewBox="0 0 24  24" fill="none" stroke="currentColor" strokeWidth="2">
+                                      <polyline points="6 9 12 15 18 9"/>
+                                    </svg>
+                                  </span>
+                                </div>
                               </div>
+                              {isOpen && (
+                                <div className="credit-reward-children">
+                                  {group.items.map((e, idx) => {
+                                    const left = Math.max(0, (e.total ?? 0) - (e.used ?? 0));
+                                    const childEmpty = left <= 0;
+                                    const childExpire = e.expire_time ? formatDate(e.expire_time) : '';
+                                    return (
+                                      <div key={idx} className={`credit-reward-child ${childEmpty ? 'is-empty' : ''}`}>
+                                        <span className="credit-reward-child-name">{e.title}</span>
+                                        <span className="credit-reward-child-meta">
+                                          {childExpire ? `${childExpire}到期` : ''}
+                                        </span>
+                                        <span className="credit-reward-child-amount">
+                                          {formatNumber(left)} / {formatNumber(e.total)}
+                                        </span>
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                              )}
                             </div>
                           );
-                        }
-                        const isOpen = !!expandedGroups[group.key];
-                        const totalLeft = group.items.reduce((s, e) => s + Math.max(0, (e.total ?? 0) - (e.used ?? 0)), 0);
-                        const isAllEmpty = totalLeft <= 0;
-                        const firstItem = group.items[0];
-                        const scopeLabel = firstItem.scope === 'work_exclusive' ? 'Work 专属积分' : '通用积分';
-                        const expireStr = firstItem.expire_time ? formatDate(firstItem.expire_time) : '';
-                        return (
-                          <div key={group.key} className={`credit-reward-group ${isAllEmpty ? 'is-empty' : ''}`}>
-                            <div
-                              className="credit-reward-group-header"
-                              onClick={() => toggleGroup(group.key)}
-                            >
-                              <div className="credit-reward-info">
-                                <div className="credit-reward-name">{group.title} <span className="credit-reward-count">· 共 {group.items.length} 笔</span></div>
-                                <div className="credit-reward-meta">
-                                  {scopeLabel}
-                                  {expireStr ? ` · ${expireStr}到期` : ''}
-                                </div>
-                              </div>
-                              <div className="credit-reward-amount">
-                                {formatNumber(totalLeft)} / {formatNumber(group.items.reduce((s, e) => s + (e.total ?? 0), 0))}
-                                <span className={`credit-reward-chevron ${isOpen ? 'open' : ''}`}>
-                                  <svg width="14" height="14" viewBox="0 0 24  24" fill="none" stroke="currentColor" strokeWidth="2">
-                                    <polyline points="6 9 12 15 18 9"/>
-                                  </svg>
-                                </span>
-                              </div>
-                            </div>
-                            {isOpen && (
-                              <div className="credit-reward-children">
-                                {group.items.map((e, idx) => {
-                                  const left = Math.max(0, (e.total ?? 0) - (e.used ?? 0));
-                                  const childEmpty = left <= 0;
-                                  const childExpire = e.expire_time ? formatDate(e.expire_time) : '';
-                                  return (
-                                    <div key={idx} className={`credit-reward-child ${childEmpty ? 'is-empty' : ''}`}>
-                                      <span className="credit-reward-child-name">{e.title}</span>
-                                      <span className="credit-reward-child-meta">
-                                        {childExpire ? `${childExpire}到期` : ''}
-                                      </span>
-                                      <span className="credit-reward-child-amount">
-                                        {formatNumber(left)} / {formatNumber(e.total)}
-                                      </span>
-                                    </div>
-                                  );
-                                })}
-                              </div>
-                            )}
-                          </div>
-                        );
-                      })}
+                        })}
+                      </div>
                     </div>
-                  </div>
-                ) : null}
-
-                {/* 通用积分详情 */}
-                <div className="credit-detail-section">
-                  <h3>通用积分明细</h3>
-                  <div className="credit-detail-grid">
-                    <div className="credit-detail-item">
-                      <span className="credit-detail-label">总量</span>
-                      <span className="credit-detail-value">{formatNumber(credits.general?.total_limit ?? 0)}</span>
-                    </div>
-                    <div className="credit-detail-item">
-                      <span className="credit-detail-label">已使用</span>
-                      <span className="credit-detail-value">{formatNumber(credits.general?.used ?? 0)}</span>
-                    </div>
-                    <div className="credit-detail-item highlight">
-                      <span className="credit-detail-label">剩余</span>
-                      <span className="credit-detail-value">{formatNumber(credits.general?.left ?? 0)}</span>
-                    </div>
-                  </div>
+                  ) : null}
                 </div>
-
-                {/* Work 专属积分详情 */}
-                <div className="credit-detail-section">
-                  <h3>Work 专属积分明细</h3>
-                  <div className="credit-detail-grid">
-                    <div className="credit-detail-item">
-                      <span className="credit-detail-label">总量</span>
-                      <span className="credit-detail-value">{formatNumber(credits.work_exclusive?.total_limit ?? 0)}</span>
-                    </div>
-                    <div className="credit-detail-item">
-                      <span className="credit-detail-label">已使用</span>
-                      <span className="credit-detail-value">{formatNumber(credits.work_exclusive?.used ?? 0)}</span>
-                    </div>
-                    <div className="credit-detail-item highlight">
-                      <span className="credit-detail-label">剩余</span>
-                      <span className="credit-detail-value">{formatNumber(credits.work_exclusive?.left ?? 0)}</span>
-                    </div>
-                  </div>
-                </div>
-
-                {credits.plan_expire_time ? (
-                  <div className="credit-plan-footer">
-                    套餐 <strong>{credits.plan_name || "Credits"}</strong> · 有效期至 {formatDate(credits.plan_expire_time)}
-                  </div>
-                ) : null}
               </>
             )}
 

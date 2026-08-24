@@ -10,6 +10,8 @@ interface ContextMenuProps {
   onCopyToken: () => void;
   onSwitchAccount: () => void;
   onClaimGift: () => void;
+  onCheckin: () => void;
+  onViewCheckinHeaders: () => void;
   onDelete: () => void;
   isCurrent?: boolean; // 是否是当前使用的账号
   showClaimGift?: boolean; // 是否显示"获取礼包"（CN/WORK 积分体系下隐藏）
@@ -25,6 +27,8 @@ export function ContextMenu({
   onCopyToken,
   onSwitchAccount,
   onClaimGift,
+  onCheckin,
+  onViewCheckinHeaders,
   onDelete,
   isCurrent = false,
   showClaimGift = true,
@@ -78,6 +82,15 @@ export function ContextMenu({
           <span className="icon">{isCurrent ? "✓" : "🔀"}</span>
           {isCurrent ? "当前使用中" : "切换账号"}
         </div>
+        <div className="context-menu-item" onClick={onCheckin}>
+          <span className="icon">📅</span>
+          每日签到
+        </div>
+        <div className="context-menu-item" onClick={onViewCheckinHeaders}>
+          <span className="icon">🧾</span>
+          签到请求头
+        </div>
+        <div className="context-menu-divider" />
         {showClaimGift && (
           <div className="context-menu-item" onClick={onClaimGift}>
             <span className="icon">🎁</span>

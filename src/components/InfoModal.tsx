@@ -1,15 +1,19 @@
+import type { ReactNode } from "react";
+
 interface InfoModalProps {
   isOpen: boolean;
   title: string;
   icon?: string;
   sections: {
     title?: string;
-    content: string;
-    type?: "text" | "code" | "list";
+    content: ReactNode;
+    type?: "text" | "code" | "list" | "hint";
   }[];
   confirmText?: string;
   onConfirm: () => void;
   onCancel: () => void;
+  extraText?: string;
+  onExtra?: () => void;
 }
 
 export function InfoModal({
@@ -20,6 +24,8 @@ export function InfoModal({
   confirmText = "确定",
   onConfirm,
   onCancel,
+  extraText,
+  onExtra,
 }: InfoModalProps) {
   if (!isOpen) return null;
 
@@ -46,7 +52,15 @@ export function InfoModal({
                   <code>{section.content}</code>
                 </pre>
               ) : section.type === "list" ? (
-                <div className="info-list" dangerouslySetInnerHTML={{ __html: section.content }} />
+                <div className="info-list">{section.content}</div>
+              ) : section.type === "hint" ? (
+                <div className="info-hint">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="16" height="16">
+                    <circle cx="12" cy="12" r="10"/>
+                    <path d="M12 16v-4M12 8h.01"/>
+                  </svg>
+                  <span>{section.content}</span>
+                </div>
               ) : (
                 <p className="info-text">{section.content}</p>
               )}
@@ -55,6 +69,11 @@ export function InfoModal({
         </div>
 
         <div className="info-modal-footer">
+          {extraText && onExtra && (
+            <button className="info-btn extra" onClick={onExtra}>
+              {extraText}
+            </button>
+          )}
           <button className="info-btn cancel" onClick={onCancel}>
             取消
           </button>

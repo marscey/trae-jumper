@@ -1,4 +1,4 @@
-import type { CreditSummary, UsageSummary } from "../types";
+import type { CheckinStatusResult, CreditSummary, UsageSummary } from "../types";
 
 interface AccountListItemProps {
   account: {
@@ -10,16 +10,18 @@ interface AccountListItemProps {
     created_at: number;
     is_current?: boolean;
     token_expired_at?: string | null;
+    checkin_status?: CheckinStatusResult;
   };
   usage: UsageSummary | null;
   credits: CreditSummary | null;
+  creditsLoading?: boolean;
   selected: boolean;
   onSelect: (id: string) => void;
   onContextMenu: (e: React.MouseEvent, id: string) => void;
   onViewDetail: (id: string) => void;
 }
 
-export function AccountListItem({ account, usage, credits, selected, onSelect, onContextMenu, onViewDetail }: AccountListItemProps) {
+export function AccountListItem({ account, usage, credits, creditsLoading, selected, onSelect, onContextMenu, onViewDetail }: AccountListItemProps) {
   const isCredits = !!credits?.is_credits_billing;
 
   const formatCredits = (v: number) => {
@@ -106,29 +108,58 @@ export function AccountListItem({ account, usage, credits, selected, onSelect, o
           <span className="status-dot"></span>
           {statusText}
         </span>
+        {account.checkin_status && account.checkin_status.code === 0 && (
+          account.checkin_status.checked_in ? (
+            <span className="checkin-tag checked" title={`今日已签到 +${account.checkin_status.credits || 200}`}>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" width="10" height="10">
+                <path d="M20 6L9 17l-5-5"/>
+              </svg>
+              已签到
+            </span>
+          ) : (
+            <span className="checkin-tag unchecked" title="今日尚未签到">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" width="10" height="10">
+                <rect x="3" y="4" width="18" height="18" rx="2"/>
+                <line x1="16" y1="2" x2="16" y2="6"/>
+                <line x1="8" y1="2" x2="8" y2="6"/>
+                <line x1="3" y1="10" x2="21" y2="10"/>
+              </svg>
+              待签到
+            </span>
+          )
+        )}
       </div>
 
       <div className="list-item-usage">
-        <div className="usage-row-header">
-          <span className="usage-row-header-label">积分</span>
-          <span className="usage-row-header-pct" style={{ color: getUsageColor() }}>{usagePercent}%</span>
-        </div>
-        <div className="usage-bar-mini">
-          <div
-            className="usage-bar-fill-mini"
-            style={{ width: `${Math.min(usagePercent, 100)}%`, background: getUsageColor() }}
-          />
-        </div>
-        <div className="usage-row-bottom">
-          <div className="usage-row-left">
-            <span className="usage-left-primary" style={{ color: getUsageColor() }}>{formatCredits(totalLeft)}</span>
-            <span className="usage-divider">/</span>
-            <span className="usage-total">{formatCredits(totalLimit)}</span>
+        {creditsLoading && !credits && !usage ? (
+          // 积分数据加载占位，避免显示成"无数据/0%"
+          <div className="usage-loading-placeholder compact">
+            <div className="usage-loading-shimmer" />
           </div>
-          <div className="usage-row-right">
-            已使用 <strong>{formatCredits(totalUsed)}</strong>
-          </div>
-        </div>
+        ) : (
+          <>
+            <div className="usage-row-header">
+              <span className="usage-row-header-label">积分</span>
+              <span className="usage-row-header-pct" style={{ color: getUsageColor() }}>{usagePercent}%</span>
+            </div>
+            <div className="usage-bar-mini">
+              <div
+                className="usage-bar-fill-mini"
+                style={{ width: `${Math.min(usagePercent, 100)}%`, background: getUsageColor() }}
+              />
+            </div>
+            <div className="usage-row-bottom">
+              <div className="usage-row-left">
+                <span className="usage-left-primary" style={{ color: getUsageColor() }}>{formatCredits(totalLeft)}</span>
+                <span className="usage-divider">/</span>
+                <span className="usage-total">{formatCredits(totalLimit)}</span>
+              </div>
+              <div className="usage-row-right">
+                已使用 <strong>{formatCredits(totalUsed)}</strong>
+              </div>
+            </div>
+          </>
+        )}
       </div>
 
       <div className="list-item-actions">

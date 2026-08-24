@@ -4,9 +4,9 @@
 
 # TraeJumper
 
-Trae CN / TRAE WORK / 国际版 Trae 多账号管理小工具
+TraeCode CN / TraeWork CN / 国际版 Trae 多账号管理小工具
 
-[![Version](https://img.shields.io/badge/version-0.9.9-blue?style=flat-square)](https://github.com/marscey/trae-jumper/releases)
+[![Version](https://img.shields.io/badge/version-0.9.10-blue?style=flat-square)](https://github.com/marscey/trae-jumper/releases)
 [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS-lightgrey?style=flat-square)](#-系统要求)
 [![Build](https://img.shields.io/github/actions/workflow/status/marscey/trae-jumper/build.yml?style=flat-square)](https://github.com/marscey/trae-jumper/actions)
 [![License](https://img.shields.io/badge/license-MIT-orange?style=flat-square)](#-免责声明)
@@ -21,7 +21,7 @@ TraeJumper 是一款面向 Trae 系列 IDE 用户的多账号管理桌面工具�
 
 **多应用支持**
 
-- 同时支持 Trae CN（国内版）、TRAE WORK、Trae（国际版）三种应用变体
+- 同时支持 TraeCode CN（国内版）、TraeWork CN、Trae（国际版）三种应用变体
 - 在设置页随时切换目标应用，机器码、安装路径、登录站点、API 端点自动跟随变更
 
 **账号管理**
@@ -54,6 +54,7 @@ TraeJumper 是一款面向 Trae 系列 IDE 用户的多账号管理桌面工具�
 - 系统托盘：关闭窗口后隐藏到托盘，左键恢复、右键菜单退出
 - 单实例运行，避免多开冲突
 - 登录窗口独立，不受托盘行为影响
+- 支持在线自动更新（关于页点击「检查更新」即可下载安装新版本）
 
 **安全存储**
 
@@ -68,7 +69,7 @@ TraeJumper 是一款面向 Trae 系列 IDE 用户的多账号管理桌面工具�
 | macOS | 10.15+ |
 
 > [!NOTE]
-> 需已安装任意一种 Trae 客户端（Trae CN / TRAE WORK / 国际版）。
+> 需已安装任意一种 Trae 客户端（TraeCode CN / TraeWork CN / 国际版）。
 
 ## 📦 安装
 

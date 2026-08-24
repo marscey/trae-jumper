@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import { listen } from "@tauri-apps/api/event";
 import * as api from "../api";
+import { loginDomain } from "../api";
 
 interface AddAccountModalProps {
   isOpen: boolean;
@@ -8,11 +9,15 @@ interface AddAccountModalProps {
   onAdd: (token: string, cookies?: string) => Promise<void>;
   onToast?: (type: "success" | "error" | "warning" | "info", message: string) => void;
   onAccountAdded?: () => void;
+  clientName?: string;
+  loginUrl?: string;
 }
 
 type AddMode = "manual" | "trae-ide" | "browser";
 
-export function AddAccountModal({ isOpen, onClose, onAdd, onToast, onAccountAdded }: AddAccountModalProps) {
+export function AddAccountModal({ isOpen, onClose, onAdd, onToast, onAccountAdded, clientName, loginUrl }: AddAccountModalProps) {
+  const displayName = clientName || "Trae 客户端";
+  const loginSite = loginDomain(loginUrl);
   const [mode, setMode] = useState<AddMode>("trae-ide");
   const [tokenInput, setTokenInput] = useState("");
   const [cookiesInput, setCookiesInput] = useState("");
@@ -123,14 +128,14 @@ export function AddAccountModal({ isOpen, onClose, onAdd, onToast, onAccountAdde
     try {
       const account = await api.readTraeAccount();
       if (account) {
-        onToast?.("success", `成功从 Trae IDE 读取账号: ${account.email}`);
+        onToast?.("success", `成功从 ${displayName} 读取账号: ${account.email}`);
         onAccountAdded?.();
         handleCloseInternal();
       } else {
-        setError("未找到 Trae IDE 登录账号或账号已存在");
+        setError(`未找到 ${displayName} 登录账号或账号已存在`);
       }
     } catch (err: any) {
-      setError(err.message || "读取 Trae IDE 账号失败");
+      setError(err.message || `读取 ${displayName} 账号失败`);
     } finally {
       setLoading(false);
     }
@@ -218,7 +223,7 @@ export function AddAccountModal({ isOpen, onClose, onAdd, onToast, onAccountAdde
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                 <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/>
               </svg>
-              从 Trae IDE 读取
+              从 Trae 客户端读取
             </button>
             <button
               className={`mode-tab ${mode === "browser" ? "active" : ""}`}
@@ -256,8 +261,8 @@ export function AddAccountModal({ isOpen, onClose, onAdd, onToast, onAccountAdde
                     <line x1="12" y1="22.08" x2="12" y2="12"/>
                   </svg>
                 </div>
-                <h3>自动读取本地 Trae IDE 账号</h3>
-                <p>系统将自动读取本地 Trae IDE 客户端当前登录的账号信息</p>
+                <h3>自动读取 {displayName} 账号</h3>
+                <p>系统将自动读取当前登录的账号信息</p>
               </div>
 
               {error && <div className="error-message">{error}</div>}
@@ -274,7 +279,7 @@ export function AddAccountModal({ isOpen, onClose, onAdd, onToast, onAccountAdde
                   </svg>
                 </div>
                 <h3>浏览器授权登录</h3>
-                <p>将打开一个登录窗口，在其中登录 trae.ai 账号，系统将自动提取 Cookies 并添加账号</p>
+                <p>将打开一个登录窗口，在其中登录 {loginSite} 账号，系统将自动提取 Cookies 并添加账号</p>
                 {browserLoginStarted && (
                   <p style={{ color: "var(--color-warning, #f0a030)", marginTop: "8px" }}>
                     登录窗口已打开，请在窗口中完成登录...
@@ -303,7 +308,7 @@ export function AddAccountModal({ isOpen, onClose, onAdd, onToast, onAccountAdde
                   <details>
                     <summary>如何获取 Token？</summary>
                     <ol>
-                      <li>打开 <a href="https://www.trae.ai/account-setting#usage" target="_blank" rel="noopener noreferrer">trae.ai 账号设置页面</a> 并登录</li>
+                      <li>打开 <a href={`${loginUrl || "https://www.trae.cn"}/account-setting#usage`} target="_blank" rel="noopener noreferrer">{loginSite} 账号设置页面</a> 并登录</li>
                       <li>按 <kbd>F12</kbd> 打开开发者工具，切换到 <strong>Network</strong> 标签</li>
                       <li>刷新页面，在请求列表中找到 <code>GetUserToken</code></li>
                       <li>点击该请求，在右侧 <strong>Response</strong> 标签中复制整个响应内容</li>
@@ -353,7 +358,7 @@ export function AddAccountModal({ isOpen, onClose, onAdd, onToast, onAccountAdde
               onClick={handleReadTraeAccount}
               disabled={loading}
             >
-              {loading ? "读取中..." : "读取本地账号"}
+              {loading ? "读取中..." : "读取 Trae 账号"}
             </button>
           ) : mode === "browser" ? (
             <button

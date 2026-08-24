@@ -506,3 +506,41 @@ impl Default for CreditSummary {
     }
 }
 
+/// 签到状态查询结果
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CheckinStatusResult {
+    pub code: i64,
+    pub message: String,
+    /// 今日是否已签到
+    pub checked_in: bool,
+    /// 签到可获得积分
+    pub credits: i64,
+    /// 签到功能是否可用
+    pub enable: bool,
+}
+
+/// 签到结果
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CheckinResult {
+    /// 服务端返回码：0 = 成功，9095 = 设备今日已签到
+    pub code: i64,
+    /// 服务端返回消息
+    pub message: String,
+}
+
+/// 签到请求头预览条目（用于前端"查看签到请求头"弹窗）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CheckinHeaderEntry {
+    /// 请求头名称
+    pub name: String,
+    /// 当前将发送的值（凭证类已脱敏）
+    pub value: String,
+    /// fixed = 固定值（对齐真实客户端）
+    /// account = 账号专属（虚拟设备档案，持久化，跨天不变）
+    /// dynamic = 每次请求重新生成
+    /// credential = 账号身份凭证（随 Token 刷新变化）
+    pub kind: String,
+    /// 用途说明
+    pub note: String,
+}
+

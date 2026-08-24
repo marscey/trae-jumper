@@ -1,4 +1,5 @@
-import { BarChart3, Users, Settings, Info } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { BarChart3, Users, Settings, Info, ChevronsLeft, ChevronsRight } from "lucide-react";
 import logoImage from "../assets/logo.png";
 
 interface SidebarProps {
@@ -13,9 +14,31 @@ const menuItems = [
   { id: "about", label: "关于", icon: Info },
 ];
 
+const AUTO_COLLAPSE_WIDTH = 1100;
+
 export function Sidebar({ currentPage, onNavigate }: SidebarProps) {
+  const [collapsed, setCollapsed] = useState(() => window.innerWidth < AUTO_COLLAPSE_WIDTH);
+  const prevNarrowRef = useRef(window.innerWidth < AUTO_COLLAPSE_WIDTH);
+
+  useEffect(() => {
+    const onResize = () => {
+      const narrow = window.innerWidth < AUTO_COLLAPSE_WIDTH;
+      if (narrow && !prevNarrowRef.current) {
+        setCollapsed(true);
+      }
+      if (!narrow && prevNarrowRef.current) {
+        setCollapsed(false);
+      }
+      prevNarrowRef.current = narrow;
+    };
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
+
+  const toggleCollapsed = () => setCollapsed((v) => !v);
+
   return (
-    <aside className="sidebar">
+    <aside className={`sidebar ${collapsed ? "collapsed" : ""}`}>
       <div className="sidebar-logo">
         <div className="logo-icon">
           <img src={logoImage} alt="Logo" className="logo-image" />
@@ -31,6 +54,7 @@ export function Sidebar({ currentPage, onNavigate }: SidebarProps) {
               key={item.id}
               className={`sidebar-item ${currentPage === item.id ? "active" : ""}`}
               onClick={() => onNavigate(item.id)}
+              title={collapsed ? item.label : undefined}
             >
               <span className="sidebar-icon">
                 <Icon />
@@ -42,7 +66,19 @@ export function Sidebar({ currentPage, onNavigate }: SidebarProps) {
       </nav>
 
       <div className="sidebar-footer">
-        <span className="version">v{__APP_VERSION__}</span>
+        <div
+          className="sidebar-item footer-toggle"
+          onClick={toggleCollapsed}
+          title={collapsed ? "展开菜单" : "收起菜单"}
+        >
+          <span className="sidebar-icon">
+            {collapsed ? <ChevronsRight size={18} /> : <ChevronsLeft size={18} />}
+          </span>
+          <span className="sidebar-label">{collapsed ? "展开菜单" : "收起菜单"}</span>
+        </div>
+        <div className="footer-meta">
+          <span className="version">v{__APP_VERSION__}</span>
+        </div>
       </div>
     </aside>
   );

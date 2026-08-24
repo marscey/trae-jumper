@@ -5,6 +5,8 @@ interface ConfirmModalProps {
   confirmText?: string;
   cancelText?: string;
   type?: "danger" | "warning" | "info";
+  /** 自定义图标（emoji），覆盖 type 默认图标 */
+  icon?: string;
   onConfirm: () => void;
   onCancel: () => void;
 }
@@ -16,6 +18,7 @@ export function ConfirmModal({
   confirmText = "确定",
   cancelText = "取消",
   type = "info",
+  icon,
   onConfirm,
   onCancel,
 }: ConfirmModalProps) {
@@ -28,9 +31,9 @@ export function ConfirmModal({
   };
 
   return (
-    <div className="modal-overlay" onClick={onCancel}>
+    <div className="modal-overlay confirm-overlay" onClick={onCancel}>
       <div className={`confirm-modal confirm-${type}`} onClick={(e) => e.stopPropagation()}>
-        <div className="confirm-icon">{icons[type]}</div>
+        <div className="confirm-icon">{icon || icons[type]}</div>
         <h3 className="confirm-title">{title}</h3>
         <p className="confirm-message">{message}</p>
         <div className="confirm-actions">

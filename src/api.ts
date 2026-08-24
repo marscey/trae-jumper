@@ -1,5 +1,18 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { Account, AccountBrief, CreditSummary, UsageSummary, UsageEventsResponse, TraeAppInfo } from "./types";
+import type {
+  Account,
+  AccountBrief,
+  CheckinConfig,
+  CheckinDeviceProfile,
+  CheckinHeaderEntry,
+  CheckinStatusResult,
+  CheckinAllStatusItem,
+  CreditSummary,
+  DeviceIdStrategy,
+  UsageSummary,
+  UsageEventsResponse,
+  TraeAppInfo,
+} from "./types";
 
 // ============ Tauri 环境检测 + 浏览器 Mock ============
 export function hasTauri(): boolean {
@@ -133,15 +146,31 @@ async function safeInvoke<T>(cmd: string, args?: Record<string, any>, fallback?:
 // 获取支持的 Trae 应用列表（含安装状态与当前选择）
 export async function getTraeApps(): Promise<TraeAppInfo[]> {
   return safeInvoke("get_trae_apps", undefined, async () => delay([
-    { key: "trae-cn", display_name: "Trae CN", installed: true, data_dir: "", is_current: true },
-    { key: "trae-work", display_name: "TRAE WORK", installed: true, data_dir: "", is_current: false },
-    { key: "trae-intl", display_name: "Trae (国际版)", installed: false, data_dir: "", is_current: false },
+    { key: "trae-cn", display_name: "TraeCode CN", installed: true, data_dir: "", is_current: true, login_url: "https://www.trae.cn" },
+    { key: "trae-work", display_name: "TraeWork CN", installed: true, data_dir: "", is_current: false, login_url: "https://www.trae.cn" },
+    { key: "trae-intl", display_name: "Trae (国际版)", installed: false, data_dir: "", is_current: false, login_url: "https://www.trae.ai" },
   ]));
 }
 
-// 切换当前管理的目标应用（Trae CN / TRAE SOLO CN / 国际版）
+// 从 login_url 提取可展示的登录域名（去协议、去 www.），如 https://www.trae.cn -> trae.cn
+export function loginDomain(loginUrl?: string): string {
+  if (!loginUrl) return "trae.cn";
+  try {
+    const host = new URL(loginUrl).hostname;
+    return host.replace(/^www\./, "");
+  } catch {
+    return loginUrl;
+  }
+}
+
+// 切换当前管理的目标应用（TraeCode CN / TraeWork CN / 国际版）
 export async function setCurrentTraeApp(appKey: string): Promise<void> {
   return safeInvoke("set_current_trae_app", { appKey }, async () => delay(undefined));
+}
+
+// 同步当前账号状态：读取当前目标客户端已登录账号，更新 current_account_id（切换客户端后调用）
+export async function syncCurrentAccount(): Promise<AccountBrief | null> {
+  return safeInvoke("sync_current_account", undefined, async () => delay(null));
 }
 
 // 添加账号（通过 Cookies）
@@ -341,6 +370,13 @@ export async function setTraeMachineId(machineId: string): Promise<void> {
   return safeInvoke("set_trae_machine_id", { machineId }, async () => delay(undefined));
 }
 
+// 获取 Trae 客户端的本机真实 device-id（ahanet/tt_net_config.config）
+// 注意：device-id 是所有 Trae 系产品（TraeCode / TraeWork）共享的本机设备标识，
+// 与产品专属的机器码（machineid）不同，对应签到请求头的 x-device-id。
+export async function getTraeDeviceId(): Promise<string> {
+  return safeInvoke("get_trae_device_id", undefined, async () => delay("MOCK-TRAE-DEVICE-ID"));
+}
+
 // 清除 Trae IDE 登录状态（让 IDE 变成全新安装状态）
 export async function clearTraeLoginState(): Promise<void> {
   return safeInvoke("clear_trae_login_state", undefined, async () => delay(undefined));
@@ -375,6 +411,118 @@ export async function refreshAllTokens(): Promise<string[]> {
 // 领取礼包
 export async function claimGift(accountId: string): Promise<void> {
   return safeInvoke("claim_gift", { accountId }, async () => delay(undefined));
+}
+
+// ============ 签到相关 API ============
+
+// 签到结果
+export interface CheckinResult {
+  code: number;
+  message: string;
+}
+
+export interface CheckinAllResultItem {
+  account_id: string;
+  account_name: string;
+  code: number;
+  message: string;
+  /** true=已提前签到被跳过；false=实际执行了 claim 接口 */
+  skipped?: boolean;
+}
+
+// 查询单个账号今日签到状态
+export async function checkinStatus(
+  accountId: string
+): Promise<CheckinStatusResult> {
+  return safeInvoke(
+    "checkin_status",
+    { accountId },
+    async () => delay({ code: 0, message: "success", checked_in: false, credits: 200, enable: true })
+  );
+}
+
+// 批量查询所有账号的今日签到状态
+export async function checkinStatusAll(): Promise<CheckinAllStatusItem[]> {
+  return safeInvoke("checkin_status_all", undefined, async () => delay([]));
+}
+
+// 单个账号签到
+export async function checkin(accountId: string): Promise<CheckinResult> {
+  return safeInvoke("checkin", { accountId }, async () => delay({ code: 0, message: "success" }));
+}
+
+// 批量签到所有账号
+export async function checkinAll(): Promise<CheckinAllResultItem[]> {
+  return safeInvoke("checkin_all", undefined, async () => delay([]));
+}
+
+// 查看账号的签到请求头配置（固定值 / 账号专属虚拟设备 / 凭证 / 每次请求变化）
+export async function getCheckinHeaders(
+  accountId: string
+): Promise<CheckinHeaderEntry[]> {
+  return safeInvoke("get_checkin_headers", { accountId }, async () => delay([]));
+}
+
+// 重置所有账号的签到虚拟设备档案（v5 → v4 重新生成）
+export async function resetCheckinDevices(): Promise<{ count: number }> {
+  return safeInvoke("reset_checkin_devices", undefined, async () => delay({ count: 0 }));
+}
+
+// 重置单个账号的签到虚拟设备档案（被风控时单独换指纹）
+export async function resetCheckinDevice(
+  accountId: string
+): Promise<CheckinDeviceProfile> {
+  return safeInvoke("reset_checkin_device", { accountId }, async () =>
+    delay({
+      session_id: "",
+      market_user_id: "",
+      device_id: "",
+      device_brand: "",
+      device_type: "",
+    })
+  );
+}
+
+// ============ 签到配置 API ============
+
+// 获取签到全局配置
+export async function getCheckinConfig(): Promise<CheckinConfig> {
+  return safeInvoke("get_checkin_config", undefined, async () => delay({
+    device_id_strategy: "real_device_prefix" as DeviceIdStrategy,
+    status_delay_min: 1,
+    status_delay_max: 3,
+    claim_delay_min: 20,
+    claim_delay_max: 60,
+  }));
+}
+
+// 更新签到全局配置
+export async function updateCheckinConfig(config: CheckinConfig): Promise<void> {
+  return safeInvoke("update_checkin_config", { config }, async () => delay(undefined));
+}
+
+// 获取「切换账号当作新设备」开关状态
+export async function getSwitchAsNewDevice(): Promise<boolean> {
+  return safeInvoke("get_switch_as_new_device", undefined, async () => delay(false));
+}
+
+// 设置「切换账号当作新设备」开关状态（即时持久化生效）
+export async function setSwitchAsNewDevice(enabled: boolean): Promise<void> {
+  return safeInvoke("set_switch_as_new_device", { enabled }, async () => delay(undefined));
+}
+
+// 重新生成单个账号的 device-id
+export async function regenerateDeviceId(accountId: string): Promise<CheckinDeviceProfile> {
+  return safeInvoke("regenerate_device_id", { accountId }, async () =>
+    delay({ session_id: "", market_user_id: "", device_id: "", device_brand: "", device_type: "" })
+  );
+}
+
+// 更换单个账号的虚拟设备型号
+export async function swapDeviceBrand(accountId: string): Promise<CheckinDeviceProfile> {
+  return safeInvoke("swap_device_brand", { accountId }, async () =>
+    delay({ session_id: "", market_user_id: "", device_id: "", device_brand: "", device_type: "" })
+  );
 }
 
 // ============ 浏览器登录 ============

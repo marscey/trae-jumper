@@ -18,8 +18,8 @@ use tauri::{
     tray::{TrayIconBuilder, TrayIconEvent, MouseButton, MouseButtonState},
 };
 
-use account::{Account, AccountBrief, AccountManager};
-use api::{CreditSummary, UsageQueryResponse, UsageSummary};
+use account::{Account, AccountBrief, AccountManager, CheckinConfig, CheckinDeviceProfile};
+use api::{CheckinHeaderEntry, CreditSummary, UsageQueryResponse, UsageSummary};
 
 /// 应用状态
 pub struct AppState {
@@ -181,6 +181,12 @@ async fn set_trae_machine_id(machine_id: String) -> Result<()> {
     machine::set_trae_machine_id(&machine_id).map_err(Into::into)
 }
 
+/// 读取 Trae 客户端的本机真实 device-id（ahanet/tt_net_config.config）
+#[tauri::command]
+async fn get_trae_device_id() -> Result<String> {
+    machine::get_trae_device_id().map_err(Into::into)
+}
+
 /// 清除 Trae IDE 登录状态（让 IDE 变成全新安装状态）
 #[tauri::command]
 async fn clear_trae_login_state() -> Result<()> {
@@ -226,6 +232,159 @@ async fn claim_gift(account_id: String, state: State<'_, AppState>) -> Result<()
     manager.claim_birthday_bonus(&account_id).await.map_err(Into::into)
 }
 
+/// 查询单个账号今日签到状态
+#[tauri::command]
+async fn checkin_status(
+    account_id: String,
+    state: State<'_, AppState>,
+) -> Result<serde_json::Value> {
+    let mut manager = state.account_manager.lock().await;
+    let result = manager
+        .checkin_status(&account_id)
+        .await
+        .map_err(ApiError::from)?;
+    serde_json::to_value(result).map_err(|e| ApiError { message: e.to_string() }.into())
+}
+
+/// 重置所有账号的签到虚拟设备档案（v5 → v4 重新生成）
+#[tauri::command]
+async fn reset_checkin_devices(state: State<'_, AppState>) -> Result<serde_json::Value> {
+    let mut manager = state.account_manager.lock().await;
+    let count = manager.reset_checkin_devices().map_err(ApiError::from)?;
+    Ok(serde_json::json!({ "count": count }))
+}
+
+/// 重置单个账号的签到虚拟设备档案（被风控时单独换指纹）
+#[tauri::command]
+async fn reset_checkin_device(
+    account_id: String,
+    state: State<'_, AppState>,
+) -> Result<serde_json::Value> {
+    let mut manager = state.account_manager.lock().await;
+    let profile = manager
+        .reset_checkin_device(&account_id)
+        .map_err(ApiError::from)?;
+    serde_json::to_value(profile).map_err(|e| ApiError { message: e.to_string() }.into())
+}
+
+/// 获取签到全局配置
+#[tauri::command]
+async fn get_checkin_config(state: State<'_, AppState>) -> Result<CheckinConfig> {
+    let manager = state.account_manager.lock().await;
+    Ok(manager.get_checkin_config())
+}
+
+/// 更新签到全局配置
+#[tauri::command]
+async fn update_checkin_config(config: CheckinConfig, state: State<'_, AppState>) -> Result<()> {
+    let mut manager = state.account_manager.lock().await;
+    manager.update_checkin_config(config).map_err(Into::into)
+}
+
+/// 获取「切换账号当作新设备」开关状态
+#[tauri::command]
+async fn get_switch_as_new_device(state: State<'_, AppState>) -> Result<bool> {
+    let manager = state.account_manager.lock().await;
+    Ok(manager.get_switch_as_new_device())
+}
+
+/// 设置「切换账号当作新设备」开关状态（即时持久化生效）
+#[tauri::command]
+async fn set_switch_as_new_device(enabled: bool, state: State<'_, AppState>) -> Result<()> {
+    let mut manager = state.account_manager.lock().await;
+    manager.set_switch_as_new_device(enabled).map_err(Into::into)
+}
+
+/// 重新生成单个账号的 device-id（保持其他字段不变）
+#[tauri::command]
+async fn regenerate_device_id(account_id: String, state: State<'_, AppState>) -> Result<CheckinDeviceProfile> {
+    let mut manager = state.account_manager.lock().await;
+    manager.regenerate_device_id(&account_id).map_err(Into::into)
+}
+
+/// 更换单个账号的虚拟设备型号（从型号池重新随机分配，不改变其他字段）
+#[tauri::command]
+async fn swap_device_brand(account_id: String, state: State<'_, AppState>) -> Result<CheckinDeviceProfile> {
+    let mut manager = state.account_manager.lock().await;
+    manager.swap_device_brand(&account_id).map_err(Into::into)
+}
+
+/// 批量查询所有账号的今日签到状态
+#[tauri::command]
+async fn checkin_status_all(
+    state: State<'_, AppState>,
+) -> Result<serde_json::Value> {
+    let mut manager = state.account_manager.lock().await;
+    let results = manager
+        .checkin_status_all()
+        .await
+        .map_err(ApiError::from)?;
+    let mapped: Vec<serde_json::Value> = results
+        .into_iter()
+        .map(|(id, name, status)| match status {
+            Some(s) => serde_json::json!({
+                "account_id": id,
+                "account_name": name,
+                "code": s.code,
+                "message": s.message,
+                "checked_in": s.checked_in,
+                "credits": s.credits,
+                "enable": s.enable,
+            }),
+            None => serde_json::json!({
+                "account_id": id,
+                "account_name": name,
+                "code": -1,
+                "message": "无 Token 或查询失败",
+                "checked_in": false,
+                "credits": 0,
+                "enable": false,
+            }),
+        })
+        .collect();
+    Ok(serde_json::Value::Array(mapped))
+}
+
+/// 单个账号签到
+#[tauri::command]
+async fn checkin(account_id: String, state: State<'_, AppState>) -> Result<serde_json::Value> {
+    let mut manager = state.account_manager.lock().await;
+    let result = manager.checkin(&account_id).await.map_err(ApiError::from)?;
+    serde_json::to_value(result).map_err(|e| ApiError { message: e.to_string() }.into())
+}
+
+/// 批量签到所有账号
+#[tauri::command]
+async fn checkin_all(state: State<'_, AppState>) -> Result<serde_json::Value> {
+    let mut manager = state.account_manager.lock().await;
+    let results = manager.checkin_all().await.map_err(ApiError::from)?;
+    let mapped: Vec<serde_json::Value> = results
+        .into_iter()
+        .map(|(id, name, result, already_checked)| {
+            serde_json::json!({
+                "account_id": id,
+                "account_name": name,
+                "code": result.code,
+                "message": result.message,
+                "skipped": already_checked, // true=已签到跳过 false=实际执行了 claim
+            })
+        })
+        .collect();
+    Ok(serde_json::Value::Array(mapped))
+}
+
+/// 查看账号的签到请求头配置（固定值 / 账号专属虚拟设备 / 凭证 / 每次请求变化）
+#[tauri::command]
+async fn get_checkin_headers(
+    account_id: String,
+    state: State<'_, AppState>,
+) -> Result<Vec<CheckinHeaderEntry>> {
+    let mut manager = state.account_manager.lock().await;
+    manager
+        .get_checkin_header_preview(&account_id)
+        .map_err(ApiError::from)
+}
+
 /// 浏览器登录
 #[tauri::command]
 async fn start_browser_login(app: tauri::AppHandle, state: State<'_, AppState>) -> Result<()> {
@@ -240,7 +399,7 @@ async fn get_trae_apps() -> Result<Vec<trae_app::TraeAppInfo>> {
     Ok(trae_app::list_app_infos())
 }
 
-/// 切换当前管理的目标应用（Trae CN / TRAE WORK / 国际版）
+/// 切换当前管理的目标应用（TraeCode CN / TraeWork CN / 国际版）
 #[tauri::command]
 async fn set_current_trae_app(app_key: String) -> Result<()> {
     let variant = trae_app::find_variant(&app_key).map_err(ApiError::from)?;
@@ -259,6 +418,14 @@ async fn set_current_trae_app(app_key: String) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// 同步当前账号状态：读取当前目标 Trae 客户端已登录账号，更新 current_account_id。
+/// 切换目标客户端后调用，确保显示的当前账号与客户端一致。
+#[tauri::command]
+async fn sync_current_account(state: State<'_, AppState>) -> Result<Option<AccountBrief>> {
+    let mut manager = state.account_manager.lock().await;
+    manager.sync_current_account().map_err(Into::into)
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -289,6 +456,8 @@ pub fn run() {
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
         .manage(AppState {
             account_manager: Arc::new(Mutex::new(account_manager)),
         })
@@ -312,16 +481,31 @@ pub fn run() {
             bind_account_machine_id,
             get_trae_machine_id,
             set_trae_machine_id,
+            get_trae_device_id,
             clear_trae_login_state,
             get_trae_path,
             set_trae_path,
             scan_trae_path,
             claim_gift,
+            checkin_status,
+            checkin_status_all,
+            checkin,
+            checkin_all,
+            get_checkin_headers,
+            reset_checkin_devices,
+            reset_checkin_device,
+            get_checkin_config,
+            update_checkin_config,
+            get_switch_as_new_device,
+            set_switch_as_new_device,
+            regenerate_device_id,
+            swap_device_brand,
             refresh_token,
             refresh_all_tokens,
             start_browser_login,
             get_trae_apps,
             set_current_trae_app,
+            sync_current_account,
         ])
         // 关闭时隐藏到系统托盘，不退出
         .on_window_event(|window, event| {

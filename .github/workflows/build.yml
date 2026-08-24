@@ -26,24 +26,37 @@ jobs:
   macos-arm64:
     if: ${{ inputs.platform == 'all' || inputs.platform == 'macos-arm64' }}
     runs-on: macos-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 22
       - run: npm install
-      - run: npx tauri build
-      - name: Rename DMG
+      - name: Build (sign)
+        working-directory: src-tauri
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: npx tauri build
+      - name: Rename artifacts
         run: |
           mv src-tauri/target/release/bundle/dmg/*.dmg "src-tauri/target/release/bundle/dmg/TraeJumper-${{ inputs.version }}-mac-arm64.dmg"
+          mv src-tauri/target/release/bundle/macos/*.app.tar.gz "src-tauri/target/release/bundle/macos/TraeJumper-${{ inputs.version }}-mac-arm64.app.tar.gz"
+          mv src-tauri/target/release/bundle/macos/*.app.tar.gz.sig "src-tauri/target/release/bundle/macos/TraeJumper-${{ inputs.version }}-mac-arm64.app.tar.gz.sig"
       - uses: actions/upload-artifact@v4
         with:
           name: macos-arm64
-          path: src-tauri/target/release/bundle/dmg/TraeJumper-${{ inputs.version }}-mac-arm64.dmg
+          path: |
+            src-tauri/target/release/bundle/dmg/TraeJumper-${{ inputs.version }}-mac-arm64.dmg
+            src-tauri/target/release/bundle/macos/TraeJumper-${{ inputs.version }}-mac-arm64.app.tar.gz
+            src-tauri/target/release/bundle/macos/TraeJumper-${{ inputs.version }}-mac-arm64.app.tar.gz.sig
 
   macos-x64:
     if: ${{ inputs.platform == 'all' || inputs.platform == 'macos-x64' }}
     runs-on: macos-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -51,37 +64,51 @@ jobs:
           node-version: 22
       - run: rustup target add x86_64-apple-darwin
       - run: npm install
-      - run: npx tauri build --target x86_64-apple-darwin
-      - name: Rename DMG
+      - name: Build (sign)
+        working-directory: src-tauri
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: npx tauri build --target x86_64-apple-darwin
+      - name: Rename artifacts
         run: |
           mv src-tauri/target/x86_64-apple-darwin/release/bundle/dmg/*.dmg "src-tauri/target/x86_64-apple-darwin/release/bundle/dmg/TraeJumper-${{ inputs.version }}-mac-x64.dmg"
+          mv src-tauri/target/x86_64-apple-darwin/release/bundle/macos/*.app.tar.gz "src-tauri/target/x86_64-apple-darwin/release/bundle/macos/TraeJumper-${{ inputs.version }}-mac-x64.app.tar.gz"
+          mv src-tauri/target/x86_64-apple-darwin/release/bundle/macos/*.app.tar.gz.sig "src-tauri/target/x86_64-apple-darwin/release/bundle/macos/TraeJumper-${{ inputs.version }}-mac-x64.app.tar.gz.sig"
       - uses: actions/upload-artifact@v4
         with:
           name: macos-x64
-          path: src-tauri/target/x86_64-apple-darwin/release/bundle/dmg/TraeJumper-${{ inputs.version }}-mac-x64.dmg
+          path: |
+            src-tauri/target/x86_64-apple-darwin/release/bundle/dmg/TraeJumper-${{ inputs.version }}-mac-x64.dmg
+            src-tauri/target/x86_64-apple-darwin/release/bundle/macos/TraeJumper-${{ inputs.version }}-mac-x64.app.tar.gz
+            src-tauri/target/x86_64-apple-darwin/release/bundle/macos/TraeJumper-${{ inputs.version }}-mac-x64.app.tar.gz.sig
 
   windows-x64:
     if: ${{ inputs.platform == 'all' || inputs.platform == 'windows-x64' }}
     runs-on: windows-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 22
       - run: npm install
-      - run: npx tauri build
-      - name: Rename EXE
+      - name: Build (sign)
+        working-directory: src-tauri
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: npx tauri build
+      - name: Rename artifacts
+        shell: pwsh
         run: |
-          Move-Item src-tauri\target\release\bundle\nsis\*.exe "src-tauri\target\release\bundle\nsis\TraeJumper-${{ inputs.version }}-win-x64-setup.exe" -Force
-      - name: Rename MSI
-        run: |
-          Move-Item src-tauri\target\release\bundle\msi\*.msi "src-tauri\target\release\bundle\msi\TraeJumper-${{ inputs.version }}-win-x64.msi" -Force
+          Move-Item src-tauri\target\release\bundle\nsis\*-setup.exe "src-tauri\target\release\bundle\nsis\TraeJumper-${{ inputs.version }}-win-x64-setup.exe" -Force
+          Move-Item src-tauri\target\release\bundle\nsis\*-setup.exe.sig "src-tauri\target\release\bundle\nsis\TraeJumper-${{ inputs.version }}-win-x64-setup.exe.sig" -Force -ErrorAction SilentlyContinue
       - uses: actions/upload-artifact@v4
         with:
           name: windows-x64
           path: |
             src-tauri/target/release/bundle/nsis/TraeJumper-${{ inputs.version }}-win-x64-setup.exe
-            src-tauri/target/release/bundle/msi/TraeJumper-${{ inputs.version }}-win-x64.msi
+            src-tauri/target/release/bundle/nsis/TraeJumper-${{ inputs.version }}-win-x64-setup.exe.sig
 
   release:
     if: ${{ inputs.create_release && always() }}
@@ -90,19 +117,30 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
+      - name: Merge updater latest.json
+        run: |
+          python3 scripts/merge-updater-json.py \
+            --version "${{ inputs.version }}" \
+            --notes "TraeJumper ${{ inputs.version }} 发布" \
+            --repo "${{ github.repository }}" \
+            --out latest.json \
+            darwin-aarch64=TraeJumper-${{ inputs.version }}-mac-arm64.app.tar.gz "$(find artifacts -path '*macos-arm64*' -name '*.sig' | head -n 1)" \
+            darwin-x86_64=TraeJumper-${{ inputs.version }}-mac-x64.app.tar.gz "$(find artifacts -path '*macos-x64*' -name '*.sig' | head -n 1)" \
+            windows-x86_64=TraeJumper-${{ inputs.version }}-win-x64-setup.exe "$(find artifacts -path '*windows-x64*' -name '*.sig' | head -n 1)"
       - name: Create Release
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
         run: |
-          FILES=$(find artifacts -type f \( -name '*.dmg' -o -name '*.exe' -o -name '*.msi' \))
+          FILES=$(find artifacts -type f \( -name '*.dmg' -o -name '*.exe' -o -name '*.msi' -o -name '*.app.tar.gz' \))
           echo "Attaching files:"
           echo "$FILES"
           gh release create "v${{ inputs.version }}" \
             --repo "${{ github.repository }}" \
             --title "TraeJumper v${{ inputs.version }}" \
-            --notes "请编辑此 Release 说明" \
+            --notes "TraeJumper ${{ inputs.version }} 发布" \
             --draft \
-            $FILES
+            $FILES ./latest.json

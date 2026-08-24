@@ -1,9 +1,107 @@
 import { useState } from "react";
+import { check } from "@tauri-apps/plugin-updater";
+import { relaunch } from "@tauri-apps/plugin-process";
+import { ask } from "@tauri-apps/plugin-dialog";
+import { hasTauri } from "../api";
 import wxQrCode from "../assets/wx.jpg";
 import logoImage from "../assets/logo.png";
 
+type UpdateStatus =
+  | { state: "idle" }
+  | { state: "checking" }
+  | { state: "up-to-date" }
+  | { state: "available"; version: string; date: string }
+  | { state: "downloading"; percent: number }
+  | { state: "downloaded" }
+  | { state: "error"; message: string };
+
 export function About() {
   const [showImageModal, setShowImageModal] = useState(false);
+  const [updateStatus, setUpdateStatus] = useState<UpdateStatus>({ state: "idle" });
+
+  const hasTauriEnv = hasTauri();
+
+  const handleCheckUpdate = async () => {
+    setUpdateStatus({ state: "checking" });
+    try {
+      const update = await check();
+      if (!update) {
+        setUpdateStatus({ state: "up-to-date" });
+        return;
+      }
+      const date = update.date ? new Date(update.date).toLocaleDateString("zh-CN") : "";
+      setUpdateStatus({ state: "available", version: update.version, date });
+
+      const confirmed = await ask(
+        `检测到新版本 v${update.version}${date ? `（发布于 ${date}）` : ""}，是否现在下载并更新？`,
+        { title: "发现新版本", kind: "info" }
+      );
+      if (!confirmed) {
+        setUpdateStatus({ state: "idle" });
+        return;
+      }
+
+      setUpdateStatus({ state: "downloading", percent: 0 });
+      let downloaded = 0;
+      let total = 0;
+      await update.download((event) => {
+        switch (event.event) {
+          case "Started":
+            total = event.data.contentLength ?? 0;
+            break;
+          case "Progress":
+            downloaded += event.data.chunkLength;
+            break;
+          case "Finished":
+            break;
+        }
+        if (total > 0) {
+          const percent = Math.min(100, Math.round((downloaded / total) * 100));
+          setUpdateStatus({ state: "downloading", percent });
+        }
+      });
+
+      setUpdateStatus({ state: "downloaded" });
+      await update.install();
+      const restarted = await ask("更新已完成，是否立即重启应用？", {
+        title: "更新完成",
+        kind: "info",
+      });
+      if (restarted) {
+        await relaunch();
+      }
+      setUpdateStatus({ state: "idle" });
+    } catch (err) {
+      setUpdateStatus({ state: "error", message: err?.toString?.() || String(err) });
+    }
+  };
+
+  const renderUpdateUi = () => {
+    if (!hasTauriEnv) {
+      return <p className="about-desc">更新功能仅在桌面客户端中可用。</p>;
+    }
+    return (
+      <div className="update-block">
+        <button className="update-btn" onClick={handleCheckUpdate} disabled={updateStatus.state === "checking" || updateStatus.state === "downloading"}>
+          {updateStatus.state === "checking"
+            ? "检查中..."
+            : updateStatus.state === "downloading"
+            ? `下载中 ${updateStatus.percent}%`
+            : "检查更新"}
+        </button>
+
+        {updateStatus.state === "up-to-date" && (
+          <p className="update-status update-status-success">已是最新版本</p>
+        )}
+        {updateStatus.state === "available" && (
+          <p className="update-status">发现新版本 v{updateStatus.version}</p>
+        )}
+        {updateStatus.state === "error" && (
+          <p className="update-status update-status-error">更新失败：{updateStatus.message}</p>
+        )}
+      </div>
+    );
+  };
 
   return (
     <div className="about-page">
@@ -13,6 +111,7 @@ export function About() {
         </div>
         <h3>TraeJumper</h3>
         <p className="about-version">版本 {__APP_VERSION__}</p>
+        {renderUpdateUi()}
         <p className="about-desc">
           Trae 账号使用量管理工具，帮助您轻松管理多个 Trae 账号的使用情况。
         </p>

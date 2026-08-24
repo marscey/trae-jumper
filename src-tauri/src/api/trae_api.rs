@@ -10,6 +10,49 @@ const API_BASE_SG: &str = "https://api-sg-central.trae.ai";
 const API_BASE_UG: &str = "https://ug-normal.trae.ai";
 const API_BASE_CN: &str = "https://api.trae.cn";
 
+/// 生成 x-tt-trace-id（对齐真实客户端的字节系 SDK 格式）
+///
+/// 抓包分析出的真实结构（三次抓包互证）：
+/// ```text
+/// [110] 00:50:03  1aee0b7b 0d8516a2 cf150e9e c5effff
+/// [112] 00:50:05  1aee149b 0d8516a2 cf150e9e d92dffff
+/// [1994] 16:54:24 1e605468 0d8516a2 cf150e95 eb48ffff
+/// ```
+/// - 前 8 hex = 毫秒时间戳（低 32 位）；相邻 2.3 秒的两次请求前缀差 0x920=2336，吻合
+/// - 第 9-16 hex = 进程会话常量（客户端进程生命周期内不变，模拟为进程级 OnceLock 随机值）
+/// - 后 16 hex = 机器前缀(6hex) + 随机(6hex) + 固定结尾 ffff
+/// - span id 恒等于 trace id 的前 16 位
+fn generate_tt_trace_id() -> String {
+    use std::sync::OnceLock;
+
+    // 进程级常量：会话段 + 机器前缀段（进程启动时生成一次，之后不变，模拟真实客户端行为）
+    static SEGS: OnceLock<(u32, u32)> = OnceLock::new();
+    let (session_seg, machine_prefix) = *SEGS.get_or_init(|| {
+        use rand::Rng;
+        let mut rng = rand::thread_rng();
+        // 机器前缀取 24 bit（6 hex），对齐真实样例 cf150e 的长度
+        (rng.gen::<u32>(), rng.gen::<u32>() & 0x00FF_FFFF)
+    });
+
+    // 毫秒时间戳低 32 位
+    let ts_ms = std::time::SystemTime::now()
+        .duration_since(std::time::SystemTime::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u32)
+        .unwrap_or(0);
+
+    // 中间随机段 6 hex
+    let rnd = {
+        use rand::Rng;
+        let mut rng = rand::thread_rng();
+        rng.gen::<u32>() & 0x00FF_FFFF
+    };
+
+    format!(
+        "00-{:08x}{:08x}{:06x}{:06x}ffff-{:08x}{:08x}-01",
+        ts_ms, session_seg, machine_prefix, rnd, ts_ms, session_seg
+    )
+}
+
 /// Trae API 客户端
 pub struct TraeApiClient {
     client: Client,
@@ -562,6 +605,164 @@ impl TraeApiClient {
         }
 
         Ok(())
+    }
+
+    // ============================================================
+    // 每日签到接口（CN / WORK 积分体系）
+    // ============================================================
+
+    /// 构建签到/签到状态接口所需的请求头（逐字段对齐 TraeWork CN 客户端真实抓包）
+    ///
+    /// 请求头分三类：
+    ///   1. 固定值：所有账号、所有请求都相同，与真实客户端保持一致
+    ///      （user-agent / x-market-client-id / x-user-region / x-lgw-req-sdk-type /
+    ///        package-type / app-version / accept / accept-language / accept-encoding / sec-fetch-*）
+    ///   2. 账号专属：来自持久化的签到虚拟设备档案（CheckinDeviceProfile），
+    ///      同一账号无论隔多少天发起签到，值都不变
+    ///      （vscode-sessionid / x-market-user-id / x-device-id / x-device-brand / x-device-type）
+    ///   3. 每次请求变化：x-request-id / x-tt-trace-id（真实客户端每次请求也不同）
+    ///      authorization 为账号身份凭证，随 Token 刷新而变化
+    ///
+    /// 注意：签到接口不能复用 build_headers_token_only——那里带的
+    /// origin / referer 与 accept 值是 Web 端特征，真实客户端签到请求并不携带。
+    fn build_checkin_headers(
+        &self,
+        profile: &crate::account::types::CheckinDeviceProfile,
+    ) -> Result<header::HeaderMap> {
+        let mut headers = header::HeaderMap::new();
+
+        // ---- 身份凭证（随 Token 刷新变化）----
+        if let Some(token) = &self.jwt_token {
+            let auth_value = header::HeaderValue::from_bytes(
+                format!("Cloud-IDE-JWT {}", token).as_bytes(),
+            )
+            .map_err(|e| anyhow!("Token 格式错误: {}", e))?;
+            headers.insert(header::AUTHORIZATION, auth_value);
+        }
+
+        // ---- 固定值（对齐真实客户端抓包）----
+        headers.insert(
+            header::USER_AGENT,
+            "VSCode 1.107.1 (TRAE SOLO CN)".parse()?,
+        );
+        headers.insert(header::ACCEPT, "*/*".parse()?);
+        headers.insert(header::ACCEPT_LANGUAGE, "zh-CN".parse()?);
+        headers.insert(header::ACCEPT_ENCODING, "gzip, deflate, br, zstd".parse()?);
+        headers.insert(header::CONTENT_TYPE, "application/json".parse()?);
+        headers.insert("x-market-client-id", "VSCode 1.107.1".parse()?);
+        headers.insert("x-user-region", "CN".parse()?);
+        headers.insert("x-lgw-req-sdk-type", "3".parse()?);
+        headers.insert("package-type", "stable_cn".parse()?);
+        headers.insert("app-version", "0.1.52".parse()?);
+        // Electron 渲染进程 fetch 自动附加的安全头（真实客户端恒定值）
+        headers.insert("sec-fetch-dest", "empty".parse()?);
+        headers.insert("sec-fetch-mode", "no-cors".parse()?);
+        headers.insert("sec-fetch-site", "none".parse()?);
+
+        // ---- 账号专属虚拟设备（持久化，跨天不变）----
+        headers.insert(
+            "vscode-sessionid",
+            header::HeaderValue::from_str(&profile.session_id)?,
+        );
+        headers.insert(
+            "x-market-user-id",
+            header::HeaderValue::from_str(&profile.market_user_id)?,
+        );
+        headers.insert(
+            "x-device-id",
+            header::HeaderValue::from_str(&profile.device_id)?,
+        );
+        headers.insert(
+            "x-device-brand",
+            header::HeaderValue::from_str(&profile.device_brand)?,
+        );
+        headers.insert(
+            "x-device-type",
+            header::HeaderValue::from_str(&profile.device_type)?,
+        );
+
+        // ---- 每次请求变化 ----
+        headers.insert(
+            "x-request-id",
+            header::HeaderValue::from_str(&uuid::Uuid::new_v4().to_string())?,
+        );
+        headers.insert(
+            "x-tt-trace-id",
+            header::HeaderValue::from_str(&generate_tt_trace_id())?,
+        );
+
+        Ok(headers)
+    }
+
+    /// 查询今日签到状态
+    ///
+    /// POST /trae/api/v2/ug/checkin_credits/status
+    pub async fn checkin_status(
+        &self,
+        profile: &crate::account::types::CheckinDeviceProfile,
+    ) -> Result<CheckinStatusResult> {
+        let url = format!("{}/trae/api/v2/ug/checkin_credits/status", self.api_base);
+        let headers = self.build_checkin_headers(profile)?;
+
+        let response = self
+            .client
+            .post(&url)
+            .headers(headers)
+            .json(&json!({}))
+            .send()
+            .await?;
+
+        let response_text = response.text().await?;
+
+        let data: serde_json::Value = serde_json::from_str(&response_text)
+            .map_err(|e| anyhow!("解析签到状态响应失败: {}", e))?;
+
+        let code = data["code"].as_i64().unwrap_or(-1);
+        let message = data["message"].as_str().unwrap_or("未知响应").to_string();
+        let checked_in = data["checked_in"].as_bool().unwrap_or(false);
+        let credits = data["credits"].as_i64().unwrap_or(0);
+        let enable = data["enable"].as_bool().unwrap_or(false);
+
+        Ok(CheckinStatusResult {
+            code,
+            message,
+            checked_in,
+            credits,
+            enable,
+        })
+    }
+
+    /// 每日签到领取积分
+    ///
+    /// POST /trae/api/v2/ug/checkin_credits/claim
+    /// 服务端按 x-device-id 限制每台设备每日签到次数，
+    /// 每个账号绑定独立的持久化虚拟设备档案以绕过此限制。
+    pub async fn checkin(
+        &self,
+        profile: &crate::account::types::CheckinDeviceProfile,
+    ) -> Result<CheckinResult> {
+        let url = format!("{}/trae/api/v2/ug/checkin_credits/claim", self.api_base);
+        let headers = self.build_checkin_headers(profile)?;
+
+        let response = self
+            .client
+            .post(&url)
+            .headers(headers)
+            .json(&json!({}))
+            .send()
+            .await?;
+
+        let response_text = response.text().await?;
+
+        let data: serde_json::Value = serde_json::from_str(&response_text)
+            .map_err(|e| anyhow!("解析签到响应失败: {}", e))?;
+        let code = data["code"].as_i64().unwrap_or(-1);
+        let message = data["message"]
+            .as_str()
+            .unwrap_or("未知响应")
+            .to_string();
+
+        Ok(CheckinResult { code, message })
     }
 
     // ============================================================

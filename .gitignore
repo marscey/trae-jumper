@@ -62,3 +62,9 @@ temp_repo/
 
 # other
 docs/
+
+# Tauri signing keys (NEVER commit these)
+*.key
+*.priv
+src-tauri/*.key
+src-tauri/*.priv

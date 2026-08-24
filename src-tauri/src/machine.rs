@@ -54,7 +54,7 @@ pub fn reset_machine_guid() -> Result<String> {
     Ok(new_guid)
 }
 
-/// 获取当前目标应用（Trae CN / TRAE WORK / 国际版）的数据目录路径
+/// 获取当前目标应用（TraeCode CN / TraeWork CN / 国际版）的数据目录路径
 #[cfg(any(target_os = "windows", target_os = "macos"))]
 fn get_trae_data_path() -> Result<PathBuf> {
     let variant = crate::trae_app::current();
@@ -74,6 +74,44 @@ fn get_trae_data_path() -> Result<PathBuf> {
     Err(anyhow!("此功能仅支持 Windows 和 macOS 系统"))
 }
 
+/// 读取当前目标 Trae 客户端已登录账号的 userId（只读，不新增/修改账号）。
+///
+/// 从数据目录 `User/globalStorage/storage.json` 中取 `iCubeAuthInfo://icube.cloudide`，
+/// 经 crypto 解密后解析出 `userId`。客户端未登录/文件不存在时返回 `Ok(None)`。
+pub fn read_trae_login_user_id() -> Result<Option<String>> {
+    #[cfg(any(target_os = "windows", target_os = "macos"))]
+    let trae_path = get_trae_data_path()?;
+
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    let trae_path: PathBuf = {
+        return Err(anyhow!("此功能仅支持 Windows 和 macOS 系统"));
+    };
+
+    let storage_path = trae_path.join("User").join("globalStorage").join("storage.json");
+    if !storage_path.exists() {
+        return Ok(None);
+    }
+
+    let content = fs::read_to_string(&storage_path)
+        .map_err(|e| anyhow!("读取 storage.json 失败: {}", e))?;
+    let storage: serde_json::Value = serde_json::from_str(&content)
+        .map_err(|e| anyhow!("解析 storage.json 失败: {}", e))?;
+
+    let auth_info_raw = match storage
+        .get("iCubeAuthInfo://icube.cloudide")
+        .and_then(|v| v.as_str())
+    {
+        Some(s) => s,
+        None => return Ok(None), // 客户端未登录，无登录信息键
+    };
+
+    let auth_info_str = crate::crypto::read_storage_value(auth_info_raw);
+    let auth_info: serde_json::Value = serde_json::from_str(&auth_info_str)
+        .map_err(|e| anyhow!("解析认证信息失败: {}", e))?;
+
+    Ok(auth_info.get("userId").and_then(|v| v.as_str()).map(String::from))
+}
+
 /// 读取 Trae IDE 的机器码
 pub fn get_trae_machine_id() -> Result<String> {
     let trae_path = get_trae_data_path()?;
@@ -87,6 +125,42 @@ pub fn get_trae_machine_id() -> Result<String> {
         .map_err(|e| anyhow!("读取 Trae 机器码失败: {}", e))?;
 
     Ok(content.trim().to_string())
+}
+
+/// 读取 Trae 客户端的本机真实 device-id（ahanet/tt_net_config.config）
+///
+/// 文件内容为键值对格式，device_id 字段形如：
+/// `device_id&#*2341316276080873@$*tnc_etag&#*...@$*`
+/// 注意：device-id 是所有 Trae 系产品共享的（TraeCode / TraeWork 同一台机器一致），
+/// 与机器码（machineid，产品专属）不同。
+pub fn get_trae_device_id() -> Result<String> {
+    let trae_path = get_trae_data_path()?;
+    let config_path = trae_path.join("ahanet").join("tt_net_config.config");
+
+    if !config_path.exists() {
+        return Err(anyhow!("Trae 客户端设备配置文件不存在: {}", config_path.display()));
+    }
+
+    let content = fs::read_to_string(&config_path)
+        .map_err(|e| anyhow!("读取设备配置失败: {}", e))?;
+
+    // 格式: device_id&#*{value}@$*...
+    const KEY: &str = "device_id&#*";
+    let start = content
+        .find(KEY)
+        .map(|i| i + KEY.len())
+        .ok_or_else(|| anyhow!("未找到 device_id 字段"))?;
+    let end = content[start..]
+        .find("@$*")
+        .map(|i| start + i)
+        .ok_or_else(|| anyhow!("device_id 字段格式错误"))?;
+
+    let device_id = content[start..end].trim().to_string();
+    if device_id.is_empty() {
+        return Err(anyhow!("device_id 为空"));
+    }
+
+    Ok(device_id)
 }
 
 /// 设置 Trae IDE 的机器码
@@ -532,8 +606,11 @@ pub fn write_trae_login_info(info: &TraeLoginInfo) -> Result<()> {
     Ok(())
 }
 
-/// 切换 Trae IDE 到指定账号（清除旧登录状态并写入新账号信息）
-pub fn switch_trae_account(info: &TraeLoginInfo, machine_id: Option<&str>) -> Result<()> {
+/// 切换 Trae IDE 到指定账号（替换登录身份；可选是否当作全新设备清理客户端本地数据）
+/// `clean_client_data == true` 时清除 state.vscdb / Local State / IndexedDB / Local & Session Storage / Cookies，
+/// 该项会同时删除最近项目历史等客户端本地数据，仅供用户显式开启的"新设备登录"场景使用；
+/// 默认 false：仅替换登录身份与机器码，保留客户端本地数据。
+pub fn switch_trae_account(info: &TraeLoginInfo, machine_id: Option<&str>, clean_client_data: bool) -> Result<()> {
     // 0. 先关闭 Trae IDE
     kill_trae()?;
 
@@ -549,54 +626,57 @@ pub fn switch_trae_account(info: &TraeLoginInfo, machine_id: Option<&str>) -> Re
         .map_err(|e| anyhow!("写入 Trae 机器码失败: {}", e))?;
     println!("[INFO] 已设置 Trae 机器码: {}", new_machine_id);
 
-    // 2. 删除 state.vscdb 数据库（清除旧的登录缓存）
-    let state_db_path = trae_path.join("User").join("globalStorage").join("state.vscdb");
-    if state_db_path.exists() {
-        let _ = fs::remove_file(&state_db_path);
-        println!("[INFO] 已删除 state.vscdb");
-    }
+    // 2~9. 可选：当作全新设备清理客户端本地数据
+    if clean_client_data {
+        // 2. 删除 state.vscdb 数据库（清除旧状态缓存，含最近项目/UI 状态等客户端本地数据）
+        let state_db_path = trae_path.join("User").join("globalStorage").join("state.vscdb");
+        if state_db_path.exists() {
+            let _ = fs::remove_file(&state_db_path);
+            println!("[INFO] 已删除 state.vscdb");
+        }
 
-    // 3. 删除 state.vscdb.backup
-    let state_db_backup_path = trae_path.join("User").join("globalStorage").join("state.vscdb.backup");
-    if state_db_backup_path.exists() {
-        let _ = fs::remove_file(&state_db_backup_path);
-    }
+        // 3. 删除 state.vscdb.backup
+        let state_db_backup_path = trae_path.join("User").join("globalStorage").join("state.vscdb.backup");
+        if state_db_backup_path.exists() {
+            let _ = fs::remove_file(&state_db_backup_path);
+        }
 
-    // 4. 清除 Local State
-    let local_state_path = trae_path.join("Local State");
-    if local_state_path.exists() {
-        let _ = fs::remove_file(&local_state_path);
-    }
+        // 4. 清除 Local State
+        let local_state_path = trae_path.join("Local State");
+        if local_state_path.exists() {
+            let _ = fs::remove_file(&local_state_path);
+        }
 
-    // 5. 清除 IndexedDB
-    let indexed_db_path = trae_path.join("IndexedDB");
-    if indexed_db_path.exists() {
-        let _ = fs::remove_dir_all(&indexed_db_path);
-    }
+        // 5. 清除 IndexedDB
+        let indexed_db_path = trae_path.join("IndexedDB");
+        if indexed_db_path.exists() {
+            let _ = fs::remove_dir_all(&indexed_db_path);
+        }
 
-    // 6. 清除 Local Storage
-    let local_storage_path = trae_path.join("Local Storage");
-    if local_storage_path.exists() {
-        let _ = fs::remove_dir_all(&local_storage_path);
-    }
+        // 6. 清除 Local Storage
+        let local_storage_path = trae_path.join("Local Storage");
+        if local_storage_path.exists() {
+            let _ = fs::remove_dir_all(&local_storage_path);
+        }
 
-    // 7. 清除 Session Storage
-    let session_storage_path = trae_path.join("Session Storage");
-    if session_storage_path.exists() {
-        let _ = fs::remove_dir_all(&session_storage_path);
-    }
+        // 7. 清除 Session Storage
+        let session_storage_path = trae_path.join("Session Storage");
+        if session_storage_path.exists() {
+            let _ = fs::remove_dir_all(&session_storage_path);
+        }
 
-    // 8. 清除 Cookies
-    let cookies_path = trae_path.join("Network").join("Cookies");
-    if cookies_path.exists() {
-        let _ = fs::remove_file(&cookies_path);
-        println!("[INFO] 已清除 Cookies");
-    }
+        // 8. 清除 Cookies
+        let cookies_path = trae_path.join("Network").join("Cookies");
+        if cookies_path.exists() {
+            let _ = fs::remove_file(&cookies_path);
+            println!("[INFO] 已清除 Cookies");
+        }
 
-    // 9. 清除 Cookies-journal
-    let cookies_journal_path = trae_path.join("Network").join("Cookies-journal");
-    if cookies_journal_path.exists() {
-        let _ = fs::remove_file(&cookies_journal_path);
+        // 9. 清除 Cookies-journal
+        let cookies_journal_path = trae_path.join("Network").join("Cookies-journal");
+        if cookies_journal_path.exists() {
+            let _ = fs::remove_file(&cookies_journal_path);
+        }
     }
 
     // 10. 更新 storage.json 中的 telemetry ID 并写入登录信息

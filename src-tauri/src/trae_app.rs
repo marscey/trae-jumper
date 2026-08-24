@@ -1,10 +1,11 @@
-//! Trae 系应用变体定义（Trae CN / TRAE WORK / 国际版 Trae）
+//! Trae 系应用变体定义（TraeCode CN / TraeWork CN / 国际版 Trae）
 //!
 //! 国内版与国际版的数据目录、安装路径、进程名、登录站点、API Host 均不同，
 //! storage.json 键名与加密格式完全一致（见 crypto.rs），可共用同一套逻辑。
 //!
-//! TRAE WORK 即原 TRAE SOLO CN（2026-06 更名，站点 work.trae.cn），
-//! 同时兼容新旧两种安装名（TRAE SOLO CN.app / TraeWork.app）与数据目录。
+//! TraeCode CN 即原 Trae CN（2026-08 更名），
+//! TraeWork CN 即原 TRAE SOLO CN → TRAE WORK（2026-06 更名）→ TraeWork CN（2026-08 更名），
+//! 同时兼容新旧安装名与数据目录。
 
 use anyhow::{anyhow, Result};
 use std::fs;
@@ -36,22 +37,29 @@ pub struct TraeAppVariant {
 
 pub const TRAE_CN: TraeAppVariant = TraeAppVariant {
     key: "trae-cn",
-    display_name: "Trae CN（国内版）",
-    data_dir_names: &["Trae CN"],
-    bundle_paths: &["/Applications/Trae CN.app", "~/Applications/Trae CN.app"],
-    process_patterns: &["Trae CN.app/Contents/MacOS"],
-    osascript_names: &["Trae CN"],
+    display_name: "TraeCode CN（原Trae CN 国内版）",
+    data_dir_names: &["TraeCode CN", "Trae CN"],
+    bundle_paths: &[
+        "/Applications/TraeCode CN.app",
+        "~/Applications/TraeCode CN.app",
+        "/Applications/Trae CN.app",
+        "~/Applications/Trae CN.app",
+    ],
+    process_patterns: &["TraeCode CN.app/Contents/MacOS", "Trae CN.app/Contents/MacOS"],
+    osascript_names: &["TraeCode CN", "Trae CN"],
     login_url: "https://www.trae.cn",
     api_host: "https://api.trae.cn",
     is_cn: true,
 };
 
-/// TRAE WORK（原 TRAE SOLO CN，2026-06 更名）
+/// TraeWork CN（原 TRAE SOLO CN → TRAE WORK → TraeWork CN）
 pub const TRAE_WORK: TraeAppVariant = TraeAppVariant {
     key: "trae-work",
-    display_name: "TRAE WORK（原 TRAE SOLO CN）",
-    data_dir_names: &["TRAE SOLO CN", "TraeWork", "Trae Work"],
+    display_name: "TraeWork CN（原 TRAE SOLO CN）",
+    data_dir_names: &["TraeWork CN", "TraeWork", "TRAE SOLO CN", "Trae Work"],
     bundle_paths: &[
+        "/Applications/TraeWork CN.app",
+        "~/Applications/TraeWork CN.app",
         "/Applications/TRAE SOLO CN.app",
         "/Applications/TraeWork.app",
         "/Applications/Trae Work.app",
@@ -59,11 +67,12 @@ pub const TRAE_WORK: TraeAppVariant = TraeAppVariant {
         "~/Applications/TraeWork.app",
     ],
     process_patterns: &[
+        "TraeWork CN.app/Contents/MacOS",
         "TRAE SOLO CN.app/Contents/MacOS",
         "TraeWork.app/Contents/MacOS",
         "Trae Work.app/Contents/MacOS",
     ],
-    osascript_names: &["TRAE SOLO CN", "TraeWork", "Trae Work"],
+    osascript_names: &["TraeWork CN", "TRAE SOLO CN", "TraeWork", "Trae Work"],
     login_url: "https://www.trae.cn",
     api_host: "https://api.trae.cn",
     is_cn: true,
@@ -214,6 +223,8 @@ pub struct TraeAppInfo {
     pub installed: bool,
     pub data_dir: String,
     pub is_current: bool,
+    /// 浏览器登录站点（前端用于展示登录域名，如 https://www.trae.cn）
+    pub login_url: String,
 }
 
 pub fn list_app_infos() -> Vec<TraeAppInfo> {
@@ -226,6 +237,7 @@ pub fn list_app_infos() -> Vec<TraeAppInfo> {
             installed: is_variant_installed(v),
             data_dir: data_dir_of(v).to_string_lossy().to_string(),
             is_current: v.key == cur.key,
+            login_url: v.login_url.to_string(),
         })
         .collect()
 }
