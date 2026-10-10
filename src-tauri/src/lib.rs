@@ -12,13 +12,15 @@ use std::process::{self, Command};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tauri::{
+    AppHandle,
+    Emitter,
     Manager,
     State,
     menu::{Menu, MenuItem, PredefinedMenuItem},
     tray::{TrayIconBuilder, TrayIconEvent, MouseButton, MouseButtonState},
 };
 
-use account::{Account, AccountBrief, AccountManager, CheckinConfig, CheckinDeviceProfile};
+use account::{Account, AccountBrief, AccountManager, CheckinConfig, CheckinDeviceProfile, CurrentClientLogin};
 use api::{CheckinHeaderEntry, CreditSummary, UsageQueryResponse, UsageSummary};
 
 /// 应用状态
@@ -48,7 +50,7 @@ type Result<T> = std::result::Result<T, ApiError>;
 #[tauri::command]
 async fn add_account_by_token(token: String, cookies: Option<String>, state: State<'_, AppState>) -> Result<Account> {
     let mut manager = state.account_manager.lock().await;
-    manager.add_account_by_token(token, cookies, None).await.map_err(Into::into)
+    manager.add_account_by_token(token, cookies, None, account::AccountLoginSource::ManualToken).await.map_err(Into::into)
 }
 
 /// 删除账号
@@ -73,10 +75,21 @@ async fn get_account(account_id: String, state: State<'_, AppState>) -> Result<A
 }
 
 /// 切换账号（设置活跃账号并更新机器码）
+/// `force=true` 时跳过跨客户端活跃冲突检测（用户确认接受会中断另一客户端会话）
 #[tauri::command]
-async fn switch_account(account_id: String, state: State<'_, AppState>) -> Result<()> {
+async fn switch_account(account_id: String, force: Option<bool>, state: State<'_, AppState>) -> Result<()> {
     let mut manager = state.account_manager.lock().await;
-    manager.switch_account(&account_id).map_err(Into::into)
+    manager.switch_account(&account_id, force.unwrap_or(false)).await.map_err(Into::into)
+}
+
+/// 手动「续签并写回客户端」：对指定账号立即 GetUserToken 续签并写入
+/// 该账号活跃的客户端 storage.json（不重启运行中的客户端）。
+/// 用于实测"写回是否触发客户端 clearUserInfo 登出"，无需等待 8 小时 token 过期。
+#[tauri::command]
+async fn renew_token_and_write_client(account_id: String, state: State<'_, AppState>) -> Result<String> {
+    let mut manager = state.account_manager.lock().await;
+    manager.refresh_token_and_write_client(&account_id).await.map_err(|e| ApiError { message: e.to_string() })?;
+    Ok("已续签并写入客户端 storage.json（未重启客户端）".to_string())
 }
 
 /// 获取账号使用量
@@ -278,7 +291,12 @@ async fn get_checkin_config(state: State<'_, AppState>) -> Result<CheckinConfig>
 #[tauri::command]
 async fn update_checkin_config(config: CheckinConfig, state: State<'_, AppState>) -> Result<()> {
     let mut manager = state.account_manager.lock().await;
-    manager.update_checkin_config(config).map_err(Into::into)
+    manager
+        .update_checkin_config(config.clone())
+        .map_err(|e| ApiError { message: e.to_string() })?;
+    // 同步日志 watchdog 开关与检查间隔到全局原子（立即生效，无需重启）
+    sync_log_watchdog_config(config.log_watchdog_enabled, config.log_watchdog_interval);
+    Ok(())
 }
 
 /// 获取「切换账号当作新设备」开关状态
@@ -389,7 +407,88 @@ async fn get_checkin_headers(
 #[tauri::command]
 async fn start_browser_login(app: tauri::AppHandle, state: State<'_, AppState>) -> Result<()> {
     let manager = state.account_manager.clone();
-    login::start_login_flow(app, manager).await.map_err(|e| ApiError { message: e })?;
+    login::start_login_flow(app, manager, None).await.map_err(|e| ApiError { message: e })?;
+    Ok(())
+}
+
+/// 浏览器登录并更新指定账号的 Token（登录后校验同一用户并更新）
+#[tauri::command]
+async fn start_browser_login_for_update(
+    account_id: String,
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+) -> Result<()> {
+    let manager = state.account_manager.clone();
+    login::start_login_flow(app, manager, Some(account_id))
+        .await
+        .map_err(|e| ApiError { message: e })?;
+    Ok(())
+}
+
+/// 通过读取当前 Trae 客户端登录态自动更新指定账号的 Token
+#[tauri::command]
+async fn update_account_token_from_client(
+    account_id: String,
+    state: State<'_, AppState>,
+) -> Result<UsageSummary> {
+    let mut manager = state.account_manager.lock().await;
+    manager
+        .update_account_token_from_client(&account_id)
+        .await
+        .map_err(Into::into)
+}
+
+/// 读取当前目标客户端已登录账号的标识（user_id + email），用于"从客户端读取更新 Token"的前端预检/展示
+#[tauri::command]
+async fn current_client_login(state: State<'_, AppState>) -> Result<Option<CurrentClientLogin>> {
+    let manager = state.account_manager.lock().await;
+    manager.current_client_login().await.map_err(Into::into)
+}
+
+/// 探测登录窗口当前 Token 与账号（手动刷新调用）
+#[tauri::command]
+async fn probe_login_webview(app: AppHandle) -> Result<Option<login::LoginWebviewProbe>> {
+    login::probe_login_webview_inner(&app).await.map_err(Into::into)
+}
+
+/// 应用登录窗口当前 Token 到指定账号（手动确认调用，更新场景）
+#[tauri::command]
+async fn apply_login_webview_token(
+    account_id: String,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<UsageSummary> {
+    let manager = state.account_manager.clone();
+    login::apply_login_webview_token_inner(&app, manager, &account_id)
+        .await
+        .map_err(Into::into)
+}
+
+/// 应用登录窗口当前 Token 新增账号（手动确认调用，新增场景）
+#[tauri::command]
+async fn apply_login_webview_new_account(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<String> {
+    login::apply_login_webview_new_account_inner(&app, state.account_manager.clone())
+        .await
+        .map_err(Into::into)
+}
+
+/// 关闭登录窗口（用户取消或关闭弹窗时调用）
+#[tauri::command]
+async fn close_login_webview(app: AppHandle) -> Result<()> {
+    login::close_login_webview_internal(&app);
+    Ok(())
+}
+
+/// 主窗口 resize 时由前端调用，重设登录子 webview 的位置和尺寸。
+/// 无登录子 webview 时静默忽略。
+#[tauri::command]
+async fn resize_login_child_webview(app: AppHandle) -> Result<()> {
+    if let Some(main_window) = app.get_window("main") {
+        let _ = login::place_login_child_webview(&main_window);
+    }
     Ok(())
 }
 
@@ -428,8 +527,156 @@ async fn sync_current_account(state: State<'_, AppState>) -> Result<Option<Accou
     manager.sync_current_account().map_err(Into::into)
 }
 
+/// 初始化日志文件，将 stdout/stderr 重定向到文件，使所有 println!/eprintln! 输出落盘。
+///
+/// 日志路径（遵循 macOS / Windows 惯例）：
+/// - macOS: ~/Library/Logs/traejumper/trae-jumper.log（Console.app 默认可见）
+/// - Windows: %LOCALAPPDATA%\traejumper\logs\trae-jumper.log
+///
+/// 超过 5MB 时自动轮转（旧日志重命名为 .old）。
+fn init_logging() {
+    // macOS 惯例: ~/Library/Logs/{app}/（Console.app 默认可见）
+    // Windows 惯例: %LOCALAPPDATA%\{app}\logs\
+    let log_dir: PathBuf = {
+        let base = directories::BaseDirs::new()
+            .map(|b| b.home_dir().to_path_buf())
+            .unwrap_or_else(|| PathBuf::from("."));
+        #[cfg(target_os = "macos")]
+        { base.join("Library/Logs/traejumper") }
+        #[cfg(target_os = "windows")]
+        { base.join("AppData/Local/traejumper/logs") }
+        #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+        { base.join(".local/share/traejumper/logs") }
+    };
+    let _ = fs::create_dir_all(&log_dir);
+    let log_path = log_dir.join("trae-jumper.log");
+
+    // 超过 5MB 时轮转
+    if let Ok(meta) = fs::metadata(&log_path) {
+        if meta.len() > 5 * 1024 * 1024 {
+            let _ = fs::rename(&log_path, log_dir.join("trae-jumper.log.old"));
+        }
+    }
+
+    let file = match fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_path)
+    {
+        Ok(f) => f,
+        Err(_) => return,
+    };
+
+    // 将 stdout (fd 1) 和 stderr (fd 2) 重定向到日志文件
+    #[cfg(unix)]
+    {
+        use std::os::unix::io::AsRawFd;
+        let fd = file.as_raw_fd();
+        unsafe {
+            libc::dup2(fd, 1);
+            libc::dup2(fd, 2);
+        }
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::io::AsRawHandle;
+        use windows_sys::Win32::System::Console::{SetStdHandle, STD_ERROR_HANDLE, STD_OUTPUT_HANDLE};
+        let handle = file.as_raw_handle();
+        unsafe {
+            SetStdHandle(STD_OUTPUT_HANDLE, handle);
+            SetStdHandle(STD_ERROR_HANDLE, handle);
+        }
+    }
+
+    // 注意：file 必须 leak，否则 drop 后 fd 关闭，后续 println 会失败
+    std::mem::forget(file);
+
+    println!(
+        "\n========== Trae Jumper 启动 {} (PID {}) ==========",
+        chrono::Local::now().format("%Y-%m-%d %H:%M:%S"),
+        std::process::id()
+    );
+
+    // 运行中监控：日志文件被外部删除/替换时自动重建并重新重定向，
+    // 避免进程持有已删除 inode 的 fd 导致日志"消失但无任何报错"。
+    start_log_watchdog(log_path);
+}
+
+/// 日志 watchdog 开关（设置页可配，默认开启）
+static LOG_WATCHDOG_ENABLED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+/// 日志 watchdog 检查间隔（秒，最小 2，设置页可配，默认 5）
+static LOG_WATCHDOG_INTERVAL: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(5);
+
+/// 同步日志 watchdog 配置（应用启动加载配置后与设置更新时调用）
+pub fn sync_log_watchdog_config(enabled: bool, interval: u32) {
+    use std::sync::atomic::Ordering;
+    LOG_WATCHDOG_ENABLED.store(enabled, Ordering::Relaxed);
+    LOG_WATCHDOG_INTERVAL.store(interval.max(2), Ordering::Relaxed);
+}
+
+/// 监控日志文件是否被外部删除/替换；是则自动重建文件并重新 dup2 重定向 stdout/stderr。
+///
+/// 背景：init_logging 仅在启动时打开一次日志 fd 并 forget，此后 println 一直写同一个
+/// fd。若用户/清理工具删除了日志文件甚至整个目录，进程持有的 fd 仍指向已删除的
+/// inode，写入静默成功但磁盘上不可见，且不会自动重建。本线程按配置间隔（默认 5 秒，
+/// 设置页可调整/关闭）检查路径的 (dev, ino)，发现文件丢失或被替换（如轮转）即重建
+/// 目录/文件并重新重定向。
+#[cfg(unix)]
+fn start_log_watchdog(log_path: PathBuf) {
+    use std::os::unix::fs::MetadataExt;
+    use std::os::unix::io::AsRawFd;
+    use std::sync::atomic::Ordering;
+
+    std::thread::spawn(move || {
+        // 当前日志文件的 (dev, ino)，None 表示路径不存在
+        let mut cur = fs::metadata(&log_path).ok().map(|m| (m.dev(), m.ino()));
+        loop {
+            let interval = LOG_WATCHDOG_INTERVAL.load(Ordering::Relaxed).max(2) as u64;
+            std::thread::sleep(std::time::Duration::from_secs(interval));
+            // 开关关闭时跳过检查（线程保持存活，避免频繁创建/销毁）
+            if !LOG_WATCHDOG_ENABLED.load(Ordering::Relaxed) {
+                continue;
+            }
+            let now = fs::metadata(&log_path).ok().map(|m| (m.dev(), m.ino()));
+            // 文件未变：继续
+            if cur.is_some() && cur == now {
+                continue;
+            }
+            // 文件被删或替换 → 重建目录与文件
+            if let Some(dir) = log_path.parent() {
+                let _ = fs::create_dir_all(dir);
+            }
+            if let Ok(f) = fs::OpenOptions::new().create(true).append(true).open(&log_path) {
+                let fd = f.as_raw_fd();
+                unsafe {
+                    libc::dup2(fd, 1);
+                    libc::dup2(fd, 2);
+                }
+                std::mem::forget(f); // 与 init_logging 一致，保持 fd 不关闭
+                cur = fs::metadata(&log_path).ok().map(|m| (m.dev(), m.ino()));
+                println!(
+                    "\n[{}] [INFO log] 检测到日志文件被外部删除/替换，已自动重建并重新重定向 (PID {})",
+                    chrono::Local::now().format("%Y-%m-%d %H:%M:%S"),
+                    std::process::id()
+                );
+            } else {
+                // 重建失败（如权限异常），置为 None 以便下轮重试
+                cur = None;
+            }
+        }
+    });
+}
+
+#[cfg(not(unix))]
+fn start_log_watchdog(_log_path: PathBuf) {
+    // Windows 暂不实现运行中日志重建（写入仍走启动时打开的 fd）
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // ---- 初始化日志（在所有其他逻辑之前，确保后续 println! 都落盘）----
+    init_logging();
+
     // ---- 单实例锁检测 ----
     if let Some(existing_pid) = try_acquire_lock() {
         println!("[INFO] 检测到已有 Trae Jumper 实例运行中 (PID: {}), 正在唤起...", existing_pid);
@@ -453,6 +700,10 @@ pub fn run() {
 
     let account_manager = AccountManager::new().expect("无法初始化账号管理器");
 
+    // 启动时同步日志 watchdog 配置（开关默认开启，间隔默认 5 秒）
+    let cfg = account_manager.get_checkin_config();
+    sync_log_watchdog_config(cfg.log_watchdog_enabled, cfg.log_watchdog_interval);
+
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
@@ -467,6 +718,7 @@ pub fn run() {
             get_accounts,
             get_account,
             switch_account,
+            renew_token_and_write_client,
             get_account_usage,
             get_account_credits,
             update_account_token,
@@ -503,6 +755,14 @@ pub fn run() {
             refresh_token,
             refresh_all_tokens,
             start_browser_login,
+            start_browser_login_for_update,
+            update_account_token_from_client,
+            current_client_login,
+            probe_login_webview,
+            apply_login_webview_token,
+            apply_login_webview_new_account,
+            close_login_webview,
+            resize_login_child_webview,
             get_trae_apps,
             set_current_trae_app,
             sync_current_account,
@@ -521,6 +781,75 @@ pub fn run() {
         // 创建系统托盘图标
         .setup(|app| {
             setup_system_tray(app)?;
+
+            // 后端定时续签任务：不依赖前端 setInterval（电脑睡眠时前端定时器会暂停，
+            // 醒来后也不会立即触发），后端用 tokio interval 每分钟检查一次，
+            // 确保客户端活跃账号的 token 在过期前被续签并写回客户端。
+            let account_manager = app.state::<AppState>().account_manager.clone();
+            let app_handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                // 等待网络就绪：每 5 秒尝试连接 api.trae.cn:443，最多等 3 分钟。
+                // macOS 重启后 DNS/网络栈初始化需要时间（实测 ~2 分钟），
+                // 这段时间内所有 API 请求都会因 DNS 解析失败瞬间返回 error sending request。
+                // 从睡眠唤醒场景下一般几秒内即可连通，不会误等。
+                {
+                    let max_wait_secs = 180u64;
+                    let check_interval_secs = 5u64;
+                    let mut waited = 0u64;
+                    loop {
+                        match tokio::net::TcpStream::connect("api.trae.cn:443").await {
+                            Ok(_) => {
+                                if waited > 0 {
+                                    eprintln!("[INFO] 网络就绪（等待 {}s 后），开始定时任务", waited);
+                                }
+                                break;
+                            }
+                            Err(e) => {
+                                if waited >= max_wait_secs {
+                                    eprintln!(
+                                        "[WARN] 网络就绪等待超时（{}s），强制启动定时任务。最后错误: {}",
+                                        waited, e
+                                    );
+                                    break;
+                                }
+                                tokio::time::sleep(tokio::time::Duration::from_secs(check_interval_secs)).await;
+                                waited += check_interval_secs;
+                            }
+                        }
+                    }
+                }
+
+                // 启动时先执行一次（覆盖从睡眠唤醒的场景）
+                {
+                    let mut manager = account_manager.lock().await;
+                    match manager.refresh_all_tokens().await {
+                        Ok(refreshed) if !refreshed.is_empty() => {
+                            // 有账号续签成功 → 通知前端刷新账号列表（修复"列表显示过期但实际已续期"）
+                            let _ = app_handle.emit("token-refreshed", refreshed);
+                        }
+                        Ok(_) => {}
+                        Err(e) => eprintln!("[WARN] 启动续签失败: {}", e),
+                    }
+                }
+                let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
+                interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+                loop {
+                    interval.tick().await;
+                    let mut manager = account_manager.lock().await;
+                    match manager.refresh_all_tokens().await {
+                        Ok(refreshed) if !refreshed.is_empty() => {
+                            let _ = app_handle.emit("token-refreshed", refreshed);
+                        }
+                        Ok(_) => {}
+                        Err(e) => eprintln!("[WARN] 定时续签失败: {}", e),
+                    }
+                    // 自动签到：内部会判断时间与去重，不满足条件时立即返回
+                    if let Err(e) = manager.auto_checkin().await {
+                        eprintln!("[WARN] 自动签到失败: {}", e);
+                    }
+                }
+            });
+
             Ok(())
         })
         .build(tauri::generate_context!())
@@ -647,11 +976,10 @@ fn setup_system_tray(app: &tauri::App) -> std::result::Result<(), Box<dyn std::e
     let menu = Menu::with_items(app, &[&show, &sep, &quit])
         .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
 
-    // 使用应用图标作为托盘图标，优先取自配置，回退内嵌 32x32 PNG
-    let icon = app.default_window_icon().cloned().unwrap_or_else(|| {
-        tauri::image::Image::from_bytes(include_bytes!("../icons/32x32.png"))
-            .expect("无法加载托盘图标")
-    });
+    // 托盘图标独立使用带圆角的版本（32x32，圆角 7px，透明外框）
+    // 与应用图标区分：应用图标方形满幅让 macOS 自动套圆角
+    let icon = tauri::image::Image::from_bytes(include_bytes!("../icons/tray-31.png"))
+        .expect("无法加载托盘图标");
 
     TrayIconBuilder::new()
         .icon(icon)

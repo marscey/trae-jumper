@@ -1,12 +1,14 @@
 import { useState, useEffect, useCallback, useRef, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { listen } from "@tauri-apps/api/event";
 import { Sidebar } from "./components/Sidebar";
 import { AccountCard } from "./components/AccountCard";
 import { AccountListItem } from "./components/AccountListItem";
 import { AddAccountModal } from "./components/AddAccountModal";
 import { ContextMenu } from "./components/ContextMenu";
 import { DetailModal } from "./components/DetailModal";
+import { UsageModal } from "./components/UsageModal";
 import { Toast } from "./components/Toast";
 import { ConfirmModal } from "./components/ConfirmModal";
 import { InfoModal } from "./components/InfoModal";
@@ -76,6 +78,7 @@ function App() {
     message: string;
     type: "danger" | "warning" | "info";
     icon?: string;
+    confirmText?: string;
     onConfirm: () => void;
   } | null>(null);
 
@@ -89,8 +92,15 @@ function App() {
   // 详情弹窗状态
   const [detailAccount, setDetailAccount] = useState<AccountWithUsage | null>(null);
 
+  // 用量弹窗状态
+  const [usageModal, setUsageModal] = useState<{
+    accountId: string;
+    accountName: string;
+  } | null>(null);
+
   // 刷新中的账号 ID
   const [refreshingIds, setRefreshingIds] = useState<Set<string>>(new Set());
+  const [renewingClientIds, setRenewingClientIds] = useState<Set<string>>(new Set());
 
   // 更新 Token 弹窗状态
   const [updateTokenModal, setUpdateTokenModal] = useState<{
@@ -191,7 +201,7 @@ function App() {
             // 这里不再额外调用 getAccountUsage，减少请求量（CN/WORK 用积分接口，国际版后端回退）
             const credits = await api
               .getAccountCredits(account.id)
-              .catch(() => null);
+              .catch((err) => { markTokenExpired(account.id, err); return null; });
 
             // 逐个更新对应账号（按 index 对齐）
             setAccounts((prev) =>
@@ -202,7 +212,7 @@ function App() {
             if (credits && !credits.is_credits_billing) {
               const usage = await api
                 .getAccountUsage(account.id)
-                .catch(() => null);
+                .catch((err) => { markTokenExpired(account.id, err); return null; });
               setAccounts((prev) =>
                 prev.map((a, i) => (i === index ? { ...a, usage } : a))
               );
@@ -241,8 +251,65 @@ function App() {
     );
   }, []);
 
+  // 检测 API 返回"Token 已过期"(401)的错误，即时将该账号的状态标签更新为"已过期"
+  // （后端已把 token_expired_at 置为当前时间并持久化，这里同步更新内存态，避免重构前一直显示"正常"）
+  // 客户端登录中的账号除外：单活跃 Token 下其 Token 由客户端持有，401 属预期，不标红
+  const markTokenExpired = useCallback((accountId: string, err: any) => {
+    if (!err) return;
+    const msg = String(err?.message || "");
+    if (msg.includes("Token 已过期") || msg.includes("401")) {
+      setAccounts((prev) =>
+        prev.map((a) =>
+          a.id === accountId && !a.is_client_active ? { ...a, token_expired_at: new Date().toISOString() } : a
+        )
+      );
+    }
+  }, []);
+
+  // 局部刷新：后台请求新数据，逐个替换，不重置 UI、不闪烁
+  const refreshAccountsData = useCallback(async () => {
+    try {
+      const list = await api.getAccounts();
+      // 先同步账号元数据（名称、状态标签等），保留旧 usage/credits
+      setAccounts((prev) => {
+        const map = new Map(prev.map((a) => [a.id, a]));
+        return list.map((a) => {
+          const old = map.get(a.id);
+          return old ? { ...old, ...a } : { ...a, usage: undefined, credits: undefined };
+        });
+      });
+
+      // 逐个请求积分数据，完成后原地替换
+      await Promise.all(
+        list.map(async (account, index) => {
+          const credits = await api
+            .getAccountCredits(account.id)
+            .catch((err) => { markTokenExpired(account.id, err); return null; });
+
+          setAccounts((prev) =>
+            prev.map((a, i) => (i === index ? { ...a, credits } : a))
+          );
+
+          if (credits && !credits.is_credits_billing) {
+            const usage = await api
+              .getAccountUsage(account.id)
+              .catch((err) => { markTokenExpired(account.id, err); return null; });
+            setAccounts((prev) =>
+              prev.map((a, i) => (i === index ? { ...a, usage } : a))
+            );
+          }
+        })
+      );
+
+      // 签到状态后台加载
+      loadCheckinStatuses().catch(() => {});
+    } catch (err) {
+      console.warn("[WARN] 局部刷新失败:", err);
+    }
+  }, [loadCheckinStatuses, markTokenExpired]);
+
   // 初始化加载：等待 Tauri 就绪后加载账号
-  // 顺序：等待 Tauri → 加载账号 → 刷新 Token → 重新加载
+  // 顺序：等待 Tauri → 续签 Token（含客户端同步）→ 加载账号
   useEffect(() => {
     let cancelled = false;
 
@@ -256,43 +323,108 @@ function App() {
 
       if (cancelled) return;
 
-      // 加载账号列表
-      await loadAccounts();
-
-      if (cancelled) return;
-
-      // 刷新即将过期的 Token，如果有刷新则重新加载
+      // 先续签 Token（含从客户端同步活跃账号的最新 Token），避免加载时命中过期 Token
       try {
         const refreshed = await api.refreshAllTokens();
         if (refreshed.length > 0 && !cancelled) {
           console.log(`[INFO] 启动时自动刷新了 ${refreshed.length} 个 Token`);
-          await loadAccounts();
         }
       } catch (e) {
         console.warn("[WARN] refreshAllTokens failed on startup:", e);
       }
+
+      if (cancelled) return;
+
+      // 加载账号列表
+      await loadAccounts();
     };
 
     init();
 
-    // 定时刷新 Token（每 30 分钟）
-    const interval = setInterval(async () => {
-      try {
-        const refreshed = await api.refreshAllTokens();
-        if (refreshed.length > 0) {
-          console.log(`[INFO] 定时自动刷新了 ${refreshed.length} 个 Token`);
-          await loadAccounts();
-        }
-      } catch (e) {
-        console.warn("[WARN] 定时刷新 Token 失败:", e);
-      }
-    }, 30 * 60 * 1000);
-
     return () => {
       cancelled = true;
-      clearInterval(interval);
     };
   }, [loadAccounts]);
+
+  // 后端自动续签成功（token-refreshed 事件）→ 静默局部刷新账号列表，
+  // 修复"列表显示过期但实际已续期"不同步的问题
+  useEffect(() => {
+    if (!api.hasTauri()) return;
+    let unlisten: (() => void) | undefined;
+    let disposed = false;
+    listen<string[]>("token-refreshed", () => {
+      refreshAccountsData();
+    })
+      .then((fn) => {
+        if (disposed) fn();
+        else unlisten = fn;
+      })
+      .catch(() => {});
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, [refreshAccountsData]);
+
+  // 自动刷新：读取 auto_refresh 配置，动态启停定时器；每 30s 重新拉一次配置以响应设置页的即时修改
+  // 使用 refreshAccountsData（局部刷新）而非 loadAccounts（全量重建），避免 UI 闪烁
+  const autoRefreshTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const configWatcherRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  useEffect(() => {
+    let stopped = false;
+    let lastEnabled = false;
+    let lastInterval = -1;
+
+    const apply = (enabled: boolean, interval: number) => {
+      // 配置未变 → 不动，避免反复重建
+      if (enabled === lastEnabled && interval === lastInterval) return;
+      lastEnabled = enabled;
+      lastInterval = interval;
+
+      if (autoRefreshTimerRef.current) {
+        clearInterval(autoRefreshTimerRef.current);
+        autoRefreshTimerRef.current = null;
+      }
+      if (!enabled) return;
+      const ms = Math.max(1, interval) * 60 * 1000;
+      autoRefreshTimerRef.current = setInterval(async () => {
+        try {
+          // 先续签 Token（含从客户端同步活跃账号的最新 Token），再局部刷新数据
+          await api.refreshAllTokens().catch(() => {});
+          await refreshAccountsData();
+        } catch (e) {
+          console.warn("[WARN] 自动刷新账号数据失败:", e);
+        }
+      }, ms);
+    };
+
+    const loadAndApply = async () => {
+      if (stopped) return;
+      try {
+        const cfg = await api.getCheckinConfig();
+        if (stopped) return;
+        apply(cfg.auto_refresh_enabled, Number(cfg.auto_refresh_interval));
+      } catch (e) {
+        console.warn("[WARN] 加载自动刷新配置失败:", e);
+      }
+    };
+
+    loadAndApply();
+    // 配置监视器：设置页改完后，最多 30s 生效（不改则无副作用）
+    configWatcherRef.current = setInterval(loadAndApply, 30_000);
+
+    return () => {
+      stopped = true;
+      if (autoRefreshTimerRef.current) {
+        clearInterval(autoRefreshTimerRef.current);
+        autoRefreshTimerRef.current = null;
+      }
+      if (configWatcherRef.current) {
+        clearInterval(configWatcherRef.current);
+        configWatcherRef.current = null;
+      }
+    };
+  }, [refreshAccountsData]);
 
   // 添加账号
   const handleAddAccount = async (token: string, cookies?: string) => {
@@ -303,10 +435,18 @@ function App() {
 
   // 删除账号
   const handleDeleteAccount = async (accountId: string) => {
+    const account = accounts.find((a) => a.id === accountId);
+    const accountInfo = account
+      ? `账号：${account.email || account.name || "未知"}`
+      : "";
+    const detailLines = [
+      accountInfo,
+      account ? `ID：${account.id}` : `ID：${accountId}`,
+    ]; // 账号名 + ID 两个关键信息
     setConfirmModal({
       isOpen: true,
       title: "删除账号",
-      message: "确定要删除此账号吗？删除后无法恢复。",
+      message: `确定要删除以下账号吗？删除后无法恢复。\n\n${detailLines.join("\n")}`,
       type: "danger",
       onConfirm: async () => {
         // 点击确认立即关闭弹窗（与其他确认逻辑保持一致，避免 await 期间弹窗残留）
@@ -337,18 +477,62 @@ function App() {
     setRefreshingIds((prev) => new Set(prev).add(accountId));
 
     try {
-      const [usage, credits] = await Promise.all([
+      const [account, usage, credits] = await Promise.all([
+        api.getAccount(accountId).catch(() => null),
         api.getAccountUsage(accountId),
         api.getAccountCredits(accountId).catch(() => null),
       ]);
       setAccounts((prev) =>
-        prev.map((a) => (a.id === accountId ? { ...a, usage, credits } : a))
+        prev.map((a) =>
+          a.id === accountId ? { ...a, ...(account || {}), usage, credits } : a
+        )
       );
       addToast("success", "数据刷新成功");
     } catch (err: any) {
+      markTokenExpired(accountId, err);
       addToast("error", err.message || "刷新失败");
     } finally {
       setRefreshingIds((prev) => {
+        const next = new Set(prev);
+        next.delete(accountId);
+        return next;
+      });
+    }
+  };
+
+  // 手动续签 Token：调用后端 refresh_token（cookies 续签），成功后刷新账号数据
+  const handleManualRefreshToken = async (accountId: string) => {
+    if (refreshingIds.has(accountId)) return;
+    setRefreshingIds((prev) => new Set(prev).add(accountId));
+    try {
+      await api.refreshToken(accountId);
+      addToast("success", "Token 续签成功");
+      // 续签成功后刷新该账号数据（token、积分、用量）
+      await handleRefreshAccount(accountId);
+    } catch (err: any) {
+      addToast("error", err.message || "续签失败");
+    } finally {
+      setRefreshingIds((prev) => {
+        const next = new Set(prev);
+        next.delete(accountId);
+        return next;
+      });
+    }
+  };
+
+  // 手动「续签并写回客户端」：立即 GetUserToken 续签写入客户端 storage.json（不经 cookies 续签守卫，不重启客户端）
+  const handleRenewClientToken = async (accountId: string) => {
+    if (renewingClientIds.has(accountId)) return;
+    setRenewingClientIds((prev) => new Set(prev).add(accountId));
+    try {
+      const msg = await api.renewTokenAndWriteClient(accountId);
+      addToast("success", msg || "已续签并写回客户端");
+      // 写回后刷新该账号数据（token、续签时间等）
+      await handleRefreshAccount(accountId);
+    } catch (err: any) {
+      addToast("error", err.message || "续签并写回客户端失败");
+    } finally {
+      setRenewingClientIds((prev) => {
         const next = new Set(prev);
         next.delete(accountId);
         return next;
@@ -384,27 +568,40 @@ function App() {
     setContextMenu({ x: e.clientX, y: e.clientY, accountId });
   };
 
-  // 复制 Token
-  const handleCopyToken = async (accountId: string) => {
-    try {
-      const account = await api.getAccount(accountId);
-      if (account.jwt_token) {
-        await navigator.clipboard.writeText(account.jwt_token);
-        addToast("success", "Token 已复制到剪贴板");
-      } else {
-        addToast("warning", "该账号没有有效的 Token");
-      }
-    } catch (err: any) {
-      addToast("error", err.message || "获取 Token 失败");
-    }
-  };
-
   // 切换账号
   const handleSwitchAccount = async (accountId: string) => {
     const account = accounts.find((a) => a.id === accountId);
     if (!account) return;
 
     const clientName = currentClientName || "客户端";
+
+    const doSwitch = async (force: boolean) => {
+      addToast("info", "正在切换账号，请稍候...");
+      try {
+        await api.switchAccount(accountId, force);
+        await loadAccounts();
+        addToast("success", `账号切换成功，请重新打开 ${clientName}`);
+      } catch (err: any) {
+        const msg: string = err?.message || "切换账号失败";
+        // 跨客户端同账号冲突：提示用户是否强制切换（会中断另一客户端会话）
+        if (!force && msg.includes("已在") && msg.includes("登录并活跃")) {
+          setConfirmModal({
+            isOpen: true,
+            title: "账号已在其他客户端登录",
+            message: `${msg}\n\n强制切换会中断该客户端正在进行的会话，是否继续？`,
+            type: "warning",
+            confirmText: "强制切换",
+            onConfirm: async () => {
+              setConfirmModal(null);
+              await doSwitch(true);
+            },
+          });
+        } else {
+          addToast("error", msg);
+        }
+      }
+    };
+
     setConfirmModal({
       isOpen: true,
       title: "切换账号",
@@ -412,14 +609,7 @@ function App() {
       type: "warning",
       onConfirm: async () => {
         setConfirmModal(null);
-        addToast("info", "正在切换账号，请稍候...");
-        try {
-          await api.switchAccount(accountId);
-          await loadAccounts();
-          addToast("success", `账号切换成功，请重新打开 ${clientName}`);
-        } catch (err: any) {
-          addToast("error", err.message || "切换账号失败");
-        }
+        await doSwitch(false);
       },
     });
   };
@@ -442,11 +632,10 @@ function App() {
   // 更新 Token
   const handleUpdateToken = async (accountId: string, token: string) => {
     try {
-      const usage = await api.updateAccountToken(accountId, token);
-      setAccounts((prev) =>
-        prev.map((a) => (a.id === accountId ? { ...a, usage } : a))
-      );
-      addToast("success", "Token 更新成功，数据已刷新");
+      await api.updateAccountToken(accountId, token);
+      addToast("success", "Token 更新成功，账号数据已刷新");
+      // 更新 Token 后刷新该账号数据（与右击"刷新数据"同一逻辑：状态标签、用量、积分）
+      await handleRefreshAccount(accountId);
     } catch (err: any) {
       throw err; // 让弹窗显示错误
     }
@@ -544,7 +733,7 @@ function App() {
     setCheckinLoading(true);
     addToast(
       "info",
-      `正在签到 ${accounts.length} 个账号（已签到会跳过，账号间有延迟，可能需要几分钟）...`
+      `正在签到 ${accounts.length} 个账号（已签到的会自动跳过，仅连续签到时才有延迟）...`
     );
     try {
       const results = await api.checkinAll();
@@ -979,6 +1168,7 @@ function App() {
           );
           return { id, success: true };
         } catch (err: any) {
+          markTokenExpired(id, err);
           return { id, success: false, error: err.message };
         }
       })
@@ -1005,10 +1195,16 @@ function App() {
     }
 
     const ids = Array.from(selectedIds);
+    const selectedNames = ids
+      .map((id) => {
+        const a = accounts.find((acc) => acc.id === id);
+        return `${a?.email || a?.name || "未知"}（${id}）`;
+      })
+      .join("\n");
     setConfirmModal({
       isOpen: true,
       title: "批量删除",
-      message: `确定要删除选中的 ${ids.length} 个账号吗？此操作无法撤销。`,
+      message: `确定要删除选中的 ${ids.length} 个账号吗？此操作无法撤销。\n\n${selectedNames}`,
       type: "danger",
       onConfirm: async () => {
         setConfirmModal(null);
@@ -1037,8 +1233,9 @@ function App() {
 
   // 删除过期/失效账号
   const handleDeleteExpiredAccounts = () => {
-    // 筛选出过期或失效的账号
+    // 筛选出过期或失效的账号（客户端登录中的账号除外：其 Token 由客户端持有，属正常状态）
     const expiredAccounts = accounts.filter((account) => {
+      if (account.is_client_active) return false;
       if (!account.token_expired_at) return false;
       const expiry = new Date(account.token_expired_at).getTime();
       if (isNaN(expiry)) return false;
@@ -1150,7 +1347,9 @@ function App() {
                           </svg>
                           删除过期
                           {(() => {
+                            // 与 handleDeleteExpiredAccounts 的筛选保持一致：客户端登录中的账号不算过期
                             const expiredCount = accounts.filter((account) => {
+                              if (account.is_client_active) return false;
                               if (!account.token_expired_at) return false;
                               const expiry = new Date(account.token_expired_at).getTime();
                               if (isNaN(expiry)) return false;
@@ -1313,6 +1512,10 @@ function App() {
                       onSelect={handleSelectAccount}
                       onContextMenu={handleContextMenu}
                       onViewDetail={handleViewDetail}
+                      onRefresh={handleManualRefreshToken}
+                      refreshing={refreshingIds.has(account.id)}
+                      onRenewClient={handleRenewClientToken}
+                      renewingClient={renewingClientIds.has(account.id)}
                     />
                   ))}
                 </div>
@@ -1329,6 +1532,10 @@ function App() {
                       onSelect={handleSelectAccount}
                       onContextMenu={handleContextMenu}
                       onViewDetail={handleViewDetail}
+                      onRefresh={handleManualRefreshToken}
+                      refreshing={refreshingIds.has(account.id)}
+                      onRenewClient={handleRenewClientToken}
+                      renewingClient={renewingClientIds.has(account.id)}
                     />
                   ))}
                 </div>
@@ -1398,7 +1605,7 @@ function App() {
           message={confirmModal.message}
           type={confirmModal.type}
           icon={confirmModal.icon}
-          confirmText="确定"
+          confirmText={confirmModal.confirmText || "确定"}
           cancelText="取消"
           onConfirm={confirmModal.onConfirm}
           onCancel={() => setConfirmModal(null)}
@@ -1415,16 +1622,22 @@ function App() {
             handleViewDetail(contextMenu.accountId);
             setContextMenu(null);
           }}
+          onViewUsage={() => {
+            const acc = accounts.find(a => a.id === contextMenu.accountId);
+            if (acc) {
+              setUsageModal({
+                accountId: acc.id,
+                accountName: acc.email || acc.name || acc.id.slice(0, 8),
+              });
+            }
+            setContextMenu(null);
+          }}
           onRefresh={() => {
             handleRefreshAccount(contextMenu.accountId);
             setContextMenu(null);
           }}
           onUpdateToken={() => {
             handleOpenUpdateToken(contextMenu.accountId);
-            setContextMenu(null);
-          }}
-          onCopyToken={() => {
-            handleCopyToken(contextMenu.accountId);
             setContextMenu(null);
           }}
           onSwitchAccount={() => {
@@ -1472,13 +1685,31 @@ function App() {
         credits={detailAccount?.credits || null}
       />
 
+      {/* 用量明细弹窗 */}
+      <UsageModal
+        isOpen={!!usageModal}
+        accountId={usageModal?.accountId || ""}
+        accountName={usageModal?.accountName || ""}
+        onClose={() => setUsageModal(null)}
+      />
+
       {/* 更新 Token 弹窗 */}
       <UpdateTokenModal
         isOpen={!!updateTokenModal}
         accountId={updateTokenModal?.accountId || ""}
         accountName={updateTokenModal?.accountName || ""}
+        clientName={currentClientName}
         onClose={() => setUpdateTokenModal(null)}
         onUpdate={handleUpdateToken}
+        onToast={addToast}
+        onSuccess={() => {
+          // 客户端读取 / 浏览器登录 更新成功后，刷新该账号数据
+          // （与右击"刷新数据"同一逻辑：状态标签、用量、积分）
+          const id = updateTokenModal?.accountId;
+          if (id) {
+            handleRefreshAccount(id).catch(() => {});
+          }
+        }}
       />
     </div>
   );

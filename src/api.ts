@@ -39,7 +39,13 @@ const MOCK_ACCOUNTS: AccountBrief[] = [
     created_at: Date.now() - 1000 * 60 * 60 * 24 * 10,
     machine_id: "MOCK-MACHINE",
     is_current: true,
+    is_client_active: false,
+    active_in_clients: [],
+    has_cookies: true,
     token_expired_at: new Date(Date.now() + 1000 * 60 * 60 * 24 * 30).toISOString(),
+    last_cookie_renewal_at: Math.floor(Date.now() / 1000) - 2 * 3600,
+    login_source: "webview",
+    login_type: "standalone",
   },
   {
     id: "mock-2",
@@ -51,7 +57,13 @@ const MOCK_ACCOUNTS: AccountBrief[] = [
     created_at: Date.now() - 1000 * 60 * 60 * 24 * 50,
     machine_id: "MOCK-MACHINE",
     is_current: false,
+    is_client_active: false,
+    active_in_clients: [],
+    has_cookies: true,
     token_expired_at: new Date(Date.now() + 1000 * 60 * 60 * 24 * 60).toISOString(),
+    last_cookie_renewal_at: Math.floor(Date.now() / 1000) - 5 * 3600,
+    login_source: "cookie",
+    login_type: "standalone",
   },
   {
     id: "mock-3",
@@ -63,7 +75,13 @@ const MOCK_ACCOUNTS: AccountBrief[] = [
     created_at: Date.now() - 1000 * 60 * 60 * 24 * 100,
     machine_id: "MOCK-MACHINE",
     is_current: false,
+    is_client_active: false,
+    active_in_clients: [],
+    has_cookies: true,
     token_expired_at: new Date(Date.now() + 1000 * 60 * 60 * 24 * 10).toISOString(),
+    last_cookie_renewal_at: Math.floor(Date.now() / 1000) - 11 * 3600,
+    login_source: "unknown",
+    login_type: "standalone",
   },
 ];
 
@@ -146,9 +164,9 @@ async function safeInvoke<T>(cmd: string, args?: Record<string, any>, fallback?:
 // 获取支持的 Trae 应用列表（含安装状态与当前选择）
 export async function getTraeApps(): Promise<TraeAppInfo[]> {
   return safeInvoke("get_trae_apps", undefined, async () => delay([
-    { key: "trae-cn", display_name: "TraeCode CN", installed: true, data_dir: "", is_current: true, login_url: "https://www.trae.cn" },
+    { key: "trae-cn", display_name: "TRAE CN", installed: true, data_dir: "", is_current: true, login_url: "https://www.trae.cn" },
     { key: "trae-work", display_name: "TraeWork CN", installed: true, data_dir: "", is_current: false, login_url: "https://www.trae.cn" },
-    { key: "trae-intl", display_name: "Trae (国际版)", installed: false, data_dir: "", is_current: false, login_url: "https://www.trae.ai" },
+    { key: "trae-intl", display_name: "Trae（国际版）", installed: false, data_dir: "", is_current: false, login_url: "https://www.trae.ai" },
   ]));
 }
 
@@ -163,7 +181,7 @@ export function loginDomain(loginUrl?: string): string {
   }
 }
 
-// 切换当前管理的目标应用（TraeCode CN / TraeWork CN / 国际版）
+// 切换当前管理的目标应用（TRAE CN / TraeWork CN / 国际版）
 export async function setCurrentTraeApp(appKey: string): Promise<void> {
   return safeInvoke("set_current_trae_app", { appKey }, async () => delay(undefined));
 }
@@ -188,6 +206,7 @@ export async function addAccountByToken(token: string, cookies?: string): Promis
     cookies: cookies ?? "",
     jwt_token: token,
     token_expired_at: null,
+    last_cookie_renewal_at: null,
     user_id: "u-new",
     tenant_id: "t-new",
     region: "CN",
@@ -216,7 +235,7 @@ export async function getAccount(accountId: string): Promise<Account> {
     return delay({
       id: b.id, name: b.name, email: b.email, avatar_url: b.avatar_url,
       cookies: "mock-cookies", jwt_token: "mock-token",
-      token_expired_at: b.token_expired_at, user_id: "u-" + b.id, tenant_id: "t-default",
+      token_expired_at: b.token_expired_at, last_cookie_renewal_at: b.last_cookie_renewal_at ?? null, user_id: "u-" + b.id, tenant_id: "t-default",
       region: b.id === "mock-3" ? "INTL" : "CN", plan_type: b.plan_type,
       created_at: b.created_at, updated_at: b.created_at,
       is_active: b.is_active, machine_id: b.machine_id ?? "MOCK-MACHINE",
@@ -230,8 +249,9 @@ export async function setActiveAccount(accountId: string): Promise<void> {
 }
 
 // 切换账号（设置活跃账号并更新机器码）
-export async function switchAccount(accountId: string): Promise<void> {
-  return safeInvoke("switch_account", { accountId }, async () => delay(undefined));
+// force=true 时跳过跨客户端活跃冲突检测（会中断另一客户端会话）
+export async function switchAccount(accountId: string, force = false): Promise<void> {
+  return safeInvoke("switch_account", { accountId, force }, async () => delay(undefined));
 }
 
 // 获取账号使用量
@@ -274,6 +294,11 @@ export async function updateCookies(accountId: string, cookies: string): Promise
   return safeInvoke("update_cookies", { accountId, cookies }, async () => delay(undefined));
 }
 
+// 手动「续签并写回客户端」：立即 GetUserToken 续签并写入该账号活跃的客户端 storage.json（不重启客户端）
+export async function renewTokenAndWriteClient(accountId: string): Promise<string> {
+  return safeInvoke("renew_token_and_write_client", { accountId }, async () => delay("已续签并写入客户端 storage.json（未重启客户端）【MOCK】"));
+}
+
 // 导出账号
 export async function exportAccounts(): Promise<string> {
   return safeInvoke("export_accounts", undefined, async () => delay(JSON.stringify({
@@ -309,9 +334,10 @@ export async function getUsageEvents(
     user_usage_group_by_sessions: [
       {
         session_id: "s1", usage_time: Math.floor(Date.now() / 1000) - 3600,
-        mode: "solo-agent-lite", model_name: "trae-latest",
-        amount_float: 1.25, cost_money_float: 0.005,
-        use_max_mode: false, product_type_list: [0],
+        mode: "solo-agent-lite", model_name: "Seed-2.1-Turbo",
+        amount_float: 1.25, cost_money_float: 0.005, credits_float: 108.76,
+        use_max_mode: false, product_type_list: [2], usage_source: 2,
+        user_input_preview: "分析问题：刚才使用 TraeJumper",
         extra_info: {
           cache_read_token: 0, cache_write_token: 0,
           input_token: 1200, output_token: 450,
@@ -319,9 +345,10 @@ export async function getUsageEvents(
       },
       {
         session_id: "s2", usage_time: Math.floor(Date.now() / 1000) - 3 * 3600,
-        mode: "chat", model_name: "gpt-4.1",
-        amount_float: 0.3, cost_money_float: 0.001,
-        use_max_mode: true, product_type_list: [0],
+        mode: "chat", model_name: "Seed-2.1-Turbo",
+        amount_float: 0.3, cost_money_float: 0.001, credits_float: 69.06,
+        use_max_mode: true, product_type_list: [2], usage_source: 2,
+        user_input_preview: "那将账号列表中，底部的",
         extra_info: {
           cache_read_token: 100, cache_write_token: 0,
           input_token: 500, output_token: 220,
@@ -493,6 +520,12 @@ export async function getCheckinConfig(): Promise<CheckinConfig> {
     status_delay_max: 3,
     claim_delay_min: 20,
     claim_delay_max: 60,
+    auto_refresh_enabled: true,
+    auto_refresh_interval: 10,
+    auto_checkin_enabled: false,
+    auto_checkin_time: "22:00",
+    log_watchdog_enabled: true,
+    log_watchdog_interval: 5,
   }));
 }
 
@@ -530,4 +563,44 @@ export async function swapDeviceBrand(accountId: string): Promise<CheckinDeviceP
 // 打开浏览器登录窗口
 export async function startBrowserLogin(): Promise<void> {
   return safeInvoke("start_browser_login", undefined, async () => delay(undefined));
+}
+
+// 打开浏览器登录窗口并更新指定账号的 Token（登录后校验同一用户）
+export async function startBrowserLoginForUpdate(accountId: string): Promise<void> {
+  return safeInvoke("start_browser_login_for_update", { accountId }, async () => delay(undefined));
+}
+
+// 通过读取当前 Trae 客户端登录态自动更新指定账号的 Token
+export async function updateAccountTokenFromClient(accountId: string): Promise<UsageSummary> {
+  return safeInvoke("update_account_token_from_client", { accountId }, async () => delay(MOCK_USAGE_3));
+}
+
+// 读取当前目标客户端已登录账号的标识（user_id + email），用于"从客户端读取更新 Token"的前端预检/展示
+export async function currentClientLogin(): Promise<{ user_id: string; email?: string } | null> {
+  return safeInvoke("current_client_login", undefined, async () => delay(null));
+}
+
+// 探测登录窗口当前 Token 与账号（手动刷新调用，仅浏览器登录更新模式使用）
+export async function probeLoginWebview(): Promise<{ token: string; user_id: string; email?: string } | null> {
+  return safeInvoke("probe_login_webview", undefined, async () => delay(null));
+}
+
+// 应用登录窗口当前 Token 到指定账号（手动确认调用，写入后自动关闭登录窗口）
+export async function applyLoginWebviewToken(accountId: string): Promise<UsageSummary> {
+  return safeInvoke("apply_login_webview_token", { accountId }, async () => delay(MOCK_USAGE_3));
+}
+
+// 应用登录窗口当前 Token 新增账号（手动确认调用，新增场景）
+export async function applyLoginWebviewNewAccount(): Promise<string> {
+  return safeInvoke("apply_login_webview_new_account", undefined, async () => delay("ok"));
+}
+
+// 关闭登录窗口（用户取消或关闭弹窗时调用）
+export async function closeLoginWebview(): Promise<void> {
+  return safeInvoke("close_login_webview", undefined, async () => delay(undefined));
+}
+
+// 主窗口 resize 时调用，重设登录子 webview 的位置和尺寸
+export async function resizeLoginChildWebview(): Promise<void> {
+  return safeInvoke("resize_login_child_webview", undefined, async () => delay(undefined));
 }

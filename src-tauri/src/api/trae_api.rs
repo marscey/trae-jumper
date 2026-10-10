@@ -61,11 +61,23 @@ pub struct TraeApiClient {
     api_base: String,  // 动态 API 端点
 }
 
+/// 创建带合理超时的 reqwest Client。
+/// - connect_timeout: 10s（避免 DNS/网络未就绪时无限阻塞）
+/// - timeout: 30s（整个请求含响应体下载的总时限）
+/// - pool_idle_timeout: 90s（连接复用，减少 TCP/TLS 握手开销）
+fn build_http_client() -> Result<Client> {
+    use std::time::Duration;
+    Ok(Client::builder()
+        .connect_timeout(Duration::from_secs(10))
+        .timeout(Duration::from_secs(30))
+        .pool_idle_timeout(Duration::from_secs(90))
+        .build()?)
+}
+
 impl TraeApiClient {
     /// 创建新的 API 客户端（使用 Cookies）
     pub fn new(cookies: &str) -> Result<Self> {
-        let client = Client::builder()
-            .build()?;
+        let client = build_http_client()?;
 
         // 清理 Cookie 字符串：移除换行符、多余空格
         let cleaned_cookies = cookies
@@ -86,10 +98,14 @@ impl TraeApiClient {
         })
     }
 
+    /// 获取当前 cookies 字符串（续签后可能被 Set-Cookie 刷新过）
+    pub fn cookies(&self) -> &str {
+        &self.cookies
+    }
+
     /// 创建新的 API 客户端（使用 Token）
     pub fn new_with_token(token: &str) -> Result<Self> {
-        let client = Client::builder()
-            .build()?;
+        let client = build_http_client()?;
 
         // 国内版优先使用 api.trae.cn，国际版默认新加坡（请求失败时自动回退其他端点）
         let api_base = if crate::trae_app::current().is_cn {
@@ -313,6 +329,25 @@ impl TraeApiClient {
         Ok(payload.user_id)
     }
 
+    /// 公共静态方法：从 JWT Token 中解析过期时间戳（秒）
+    pub fn parse_jwt_exp(token: &str) -> Result<i64> {
+        let parts: Vec<&str> = token.split('.').collect();
+        if parts.len() != 3 {
+            return Err(anyhow!("无效的 JWT Token 格式"));
+        }
+        let payload_b64 = parts[1];
+        let padding = (4 - payload_b64.len() % 4) % 4;
+        let padded = format!("{}{}", payload_b64, "=".repeat(padding));
+        let standard_b64 = padded.replace('-', "+").replace('_', "/");
+        let payload_bytes = BASE64.decode(&standard_b64)
+            .map_err(|e| anyhow!("解码 JWT payload 失败: {}", e))?;
+        let payload_str = String::from_utf8(payload_bytes)
+            .map_err(|e| anyhow!("JWT payload 不是有效的 UTF-8: {}", e))?;
+        let payload: JwtPayloadRaw = serde_json::from_str(&payload_str)
+            .map_err(|e| anyhow!("解析 JWT payload 失败: {}", e))?;
+        Ok(payload.exp)
+    }
+
     /// 构建请求头
     fn build_headers(&self, with_auth: bool) -> Result<header::HeaderMap> {
         let mut headers = header::HeaderMap::new();
@@ -344,46 +379,174 @@ impl TraeApiClient {
         Ok(headers)
     }
 
-    /// 获取用户 Token
-    pub async fn get_user_token(&mut self) -> Result<UserTokenResult> {
-        let url = format!("{}/cloudide/api/v3/common/GetUserToken", self.api_base);
-        let headers = self.build_headers(false)?;
+    /// 合并 Set-Cookie 响应头到现有 cookie 字符串。
+    ///
+    /// 服务端续签时会通过 Set-Cookie 返回刷新后的 session 类 cookie（如 sessionid、sid_guard 等），
+    /// 必须把这些新值回写到存储，否则旧 cookie 快照会随服务端 session 过期而失效，
+    /// 导致后续续签一直返回 "get session empty"。
+    fn merge_set_cookies(&mut self, set_cookies: &[String]) -> usize {
+        if set_cookies.is_empty() {
+            return 0;
+        }
+        // 解析现有 cookies 为 name->value map
+        let mut cookie_map: std::collections::HashMap<String, String> = self
+            .cookies
+            .split(';')
+            .filter_map(|c| {
+                let c = c.trim();
+                if c.is_empty() {
+                    return None;
+                }
+                let mut it = c.splitn(2, '=');
+                let name = it.next()?.trim().to_string();
+                let value = it.next().unwrap_or("").trim().to_string();
+                if name.is_empty() {
+                    return None;
+                }
+                Some((name, value))
+            })
+            .collect();
 
-        let response = self
-            .client
-            .post(&url)
-            .headers(headers)
-            .send()
-            .await?;
-
-        if !response.status().is_success() {
-            return Err(anyhow!("获取 Token 失败: {}", response.status()));
+        let mut merged = 0;
+        for sc in set_cookies {
+            // Set-Cookie 格式: name=value; Path=/; Domain=...; Expires=...; HttpOnly
+            let first_part = sc.split(';').next().unwrap_or("").trim();
+            if first_part.is_empty() {
+                continue;
+            }
+            let mut it = first_part.splitn(2, '=');
+            let name = match it.next() {
+                Some(n) if !n.trim().is_empty() => n.trim().to_string(),
+                _ => continue,
+            };
+            let value = it.next().unwrap_or("").trim().to_string();
+            // 跳过我们自己注入的传递 cookie（不是服务端真实会话 cookie）
+            if name == "trae_jumper_token" || name == "trae_jumper_probe" {
+                continue;
+            }
+            cookie_map.insert(name, value);
+            merged += 1;
         }
 
-        let data: GetUserTokenResponse = response.json().await?;
-        self.jwt_token = Some(data.result.token.clone());
-        Ok(data.result)
+        if merged > 0 {
+            let new_cookie_str: String = cookie_map
+                .into_iter()
+                .map(|(k, v)| format!("{}={}", k, v))
+                .collect::<Vec<_>>()
+                .join("; ");
+            println!(
+                "[DEBUG cookies] 合并 Set-Cookie: 更新 {} 个 cookie，cookie 总数 {} -> {}",
+                merged,
+                self.cookies.split(';').filter(|c| !c.trim().is_empty()).count(),
+                new_cookie_str.split(';').filter(|c| !c.trim().is_empty()).count()
+            );
+            self.cookies = new_cookie_str;
+        }
+        merged
+    }
+
+    /// 获取用户 Token
+    pub async fn get_user_token(&mut self) -> Result<UserTokenResult> {
+        let headers = self.build_headers(false)?;
+        let mut last_err = anyhow!("获取 Token 失败");
+        let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S");
+
+        // 记录发送的 cookie 名称（不记值，避免敏感信息）
+        let cookie_names: Vec<&str> = self
+            .cookies
+            .split(';')
+            .filter_map(|c| c.split('=').next().map(|s| s.trim()))
+            .filter(|s| !s.is_empty())
+            .collect();
+        println!("[{}] [DEBUG get_user_token] 发送 cookies: {} 个: [{}]", now, cookie_names.len(), cookie_names.join(", "));
+
+        // 尝试多个端点，国内版账号在 CN 端点才能续签成功
+        for base in [API_BASE_CN, API_BASE_SG, API_BASE_UG, API_BASE_US] {
+            let url = format!("{}/cloudide/api/v3/common/GetUserToken", base);
+            let response = self
+                .client
+                .post(&url)
+                .headers(headers.clone())
+                .send()
+                .await;
+
+            match response {
+                Ok(resp) if resp.status().is_success() => {
+                    // 先提取 Set-Cookie（在消费 resp 之前读取 headers）
+                    let set_cookies: Vec<String> = resp
+                        .headers()
+                        .get_all(header::SET_COOKIE)
+                        .iter()
+                        .filter_map(|v| v.to_str().ok().map(|s| s.to_string()))
+                        .collect();
+
+                    let data: GetUserTokenResponse = resp.json().await
+                        .map_err(|e| anyhow!("解析 Token 响应失败: {}", e))?;
+                    if !data.result.token.is_empty() {
+                        // 合并服务端刷新的 cookies，保持 session 存活
+                        let merged = self.merge_set_cookies(&set_cookies);
+                        if merged > 0 {
+                            let now2 = chrono::Local::now().format("%Y-%m-%d %H:%M:%S");
+                            println!("[{}] [DEBUG get_user_token] 合并了 {} 条 Set-Cookie", now2, merged);
+                        }
+                        self.jwt_token = Some(data.result.token.clone());
+                        return Ok(data.result);
+                    }
+                    last_err = anyhow!("Token 为空，尝试下一个端点");
+                }
+                Ok(resp) => {
+                    let status = resp.status();
+                    let body = resp.text().await.unwrap_or_default();
+                    let now2 = chrono::Local::now().format("%Y-%m-%d %H:%M:%S");
+                    println!("[{}] [WARN get_user_token] {} 返回 {} body: {}", now2, base, status, &body[..body.len().min(500)]);
+                    last_err = anyhow!("获取 Token 失败: {} | body: {}", status, &body[..body.len().min(200)]);
+                }
+                Err(e) => {
+                    let now2 = chrono::Local::now().format("%Y-%m-%d %H:%M:%S");
+                    println!("[{}] [WARN get_user_token] {} 请求失败: {}", now2, base, e);
+                    last_err = anyhow!("请求失败: {}", e);
+                }
+            }
+        }
+
+        Err(last_err)
     }
 
     /// 获取用户信息
     pub async fn get_user_info(&self) -> Result<UserInfoResult> {
-        let url = format!("{}/cloudide/api/v3/trae/GetUserInfo", API_BASE_UG);
         let headers = self.build_headers(false)?;
+        let mut last_err = anyhow!("获取用户信息失败");
 
-        let response = self
-            .client
-            .post(&url)
-            .headers(headers)
-            .json(&json!({"IfWebPage": true}))
-            .send()
-            .await?;
+        // 尝试多个端点（UG → CN → SG），国内版账号在 CN 端点才有完整 screen_name
+        for base in [API_BASE_UG, API_BASE_CN, API_BASE_SG] {
+            let url = format!("{}/cloudide/api/v3/trae/GetUserInfo", base);
+            let response = self
+                .client
+                .post(&url)
+                .headers(headers.clone())
+                .json(&json!({"IfWebPage": true}))
+                .send()
+                .await;
 
-        if !response.status().is_success() {
-            return Err(anyhow!("获取用户信息失败: {}", response.status()));
+            match response {
+                Ok(resp) if resp.status().is_success() => {
+                    let data: GetUserInfoResponse = resp.json().await
+                        .map_err(|e| anyhow!("解析用户信息失败: {}", e))?;
+                    if !data.result.screen_name.is_empty() {
+                        return Ok(data.result);
+                    }
+                    last_err = anyhow!("screen_name 为空，尝试下一个端点");
+                }
+                Ok(resp) => {
+                    last_err = anyhow!("获取用户信息失败: {}", resp.status());
+                }
+                Err(e) => {
+                    last_err = anyhow!("请求失败: {}", e);
+                }
+            }
         }
 
-        let data: GetUserInfoResponse = response.json().await?;
-        Ok(data.result)
+        Err(last_err)
     }
 
     /// 获取用户配额和使用量
@@ -429,7 +592,8 @@ impl TraeApiClient {
                 "start_time": start_time,
                 "end_time": end_time,
                 "page_size": page_size,
-                "page_num": page_num
+                "page_num": page_num,
+                "usage_type": [7]
             }))
             .send()
             .await?;
@@ -462,7 +626,6 @@ impl TraeApiClient {
 
         for base in endpoints.iter() {
             let url = format!("{}/trae/api/v2/pay/user_current_entitlement_list", base);
-            println!("[DEBUG] Trying API endpoint: {}", url);
 
             let response = self
                 .client
@@ -475,13 +638,10 @@ impl TraeApiClient {
             match response {
                 Ok(resp) if resp.status().is_success() => {
                     let response_text = resp.text().await?;
-                    println!("[DEBUG] API Response from {}: {}", base, response_text);
 
                     match serde_json::from_str::<EntitlementListResponse>(&response_text) {
                         Ok(entitlements) => {
                             let summary = Self::parse_entitlements_to_summary(entitlements)?;
-                            println!("[DEBUG] Parsed Summary: fast_request_limit={}, extra_fast_request_limit={}",
-                                summary.fast_request_limit, summary.extra_fast_request_limit);
                             return Ok(summary);
                         }
                         Err(e) => {
@@ -490,11 +650,9 @@ impl TraeApiClient {
                     }
                 }
                 Ok(resp) => {
-                    println!("[DEBUG] API {} returned error: {}", base, resp.status());
                     last_error = anyhow!("API 返回错误: {}", resp.status());
                 }
                 Err(e) => {
-                    println!("[DEBUG] API {} request failed: {}", base, e);
                     last_error = anyhow!("请求失败: {}", e);
                 }
             }
@@ -680,6 +838,12 @@ impl TraeApiClient {
             "x-device-type",
             header::HeaderValue::from_str(&profile.device_type)?,
         );
+        // Windows 客户端特有头（真实抓包：x-lscbd-aid 恒为 787976，platform 与设备平台一致；
+        // macOS 抓包无此头，故仅 windows 设备档案发送）
+        if profile.device_type == "windows" {
+            headers.insert("x-lscbd-aid", "787976".parse()?);
+            headers.insert("x-lscbd-platform", "windows".parse()?);
+        }
 
         // ---- 每次请求变化 ----
         headers.insert(
@@ -790,8 +954,6 @@ impl TraeApiClient {
             {
                 Ok(r) if r.status().is_success() => {
                     let txt = r.text().await.unwrap_or_default();
-                    println!("[DEBUG] ===== RAW v2 entitlement JSON ({} chars) =====", txt.len());
-                    println!("[DEBUG] FULL_RESPONSE: {}", txt);
                     match serde_json::from_str::<EntitlementListResponse>(&txt) {
                         Ok(d) => return Ok(d),
                         Err(e) => {
@@ -877,14 +1039,11 @@ impl TraeApiClient {
         let mut last_err: anyhow::Error = anyhow!("所有 API 端点都失败（积分开关）");
         for base in &endpoints_order {
             let url = format!("{}{}", base, path);
-            println!("[DEBUG] Trying credits endpoint: {}", url);
             match self.client.post(&url).headers(headers.clone())
                 .json(&json!({})).send().await
             {
                 Ok(r) if r.status().is_success() => {
                     let txt = r.text().await.unwrap_or_default();
-                    println!("[DEBUG] credits_billing_status raw response (first 3KB): {}",
-                             txt.chars().take(3000).collect::<String>());
                     match serde_json::from_str::<CreditsBillingStatusResponse>(&txt) {
                         Ok(raw) => { billing_switch = Some(raw); break; }
                         Err(e) => {
@@ -917,41 +1076,17 @@ impl TraeApiClient {
 
         // ---------- Step 2: v2 entitlement list — 真正的积分数值 ----------
         let entitlements = self.get_entitlement_list_v2_by_token().await?;
-        println!("[DEBUG] credits step2 OK: entitlement_packs.len = {}",
-                 entitlements.user_entitlement_pack_list.len());
 
         // ---------- Step 3: web_user_pay_status — 拿 plan 名（最佳努力） ----------
         let pay_status = match self.get_web_user_pay_status_by_token().await {
-            Ok(p) => {
-                println!("[DEBUG] credits step3 OK: user_pay_identity_str = {:?}",
-                         p.user_pay_identity_str);
-                Some(p)
-            }
-            Err(e) => {
-                println!("[WARN] 获取 pay_status 失败，忽略: {}", e);
-                None
-            }
+            Ok(p) => Some(p),
+            Err(_) => None,
         };
 
         // ---------- 聚合 ----------
         let summary = Self::assemble_credit_summary_from_parts(
             switch, entitlements, pay_status,
         );
-        println!(
-            "[DEBUG] ===== CREDIT SUMMARY =====\n  is_credits_billing={}\n  plan_name={:?}\n  plan_expire={}\n  total_available={}\n  general: total={} used={} left={}\n  work:    total={} used={} left={}\n  reward_total_left={}\n  reward_entries={}",
-            summary.is_credits_billing,
-            summary.plan_name,
-            summary.plan_expire_time,
-            summary.total_available,
-            summary.general.total_limit, summary.general.used, summary.general.left,
-            summary.work_exclusive.total_limit, summary.work_exclusive.used, summary.work_exclusive.left,
-            summary.reward_total_left,
-            summary.reward_entries.len(),
-        );
-        for (i, r) in summary.reward_entries.iter().enumerate() {
-            println!("  reward[{}]: {:?} | total={} used={} scope={} expire={}",
-                     i, r.title, r.total, r.used, r.scope, r.expire_time);
-        }
         Ok(summary)
     }
 
@@ -961,12 +1096,6 @@ impl TraeApiClient {
         entitlements: EntitlementListResponse,
         pay_status: Option<WebUserPayStatusResponse>,
     ) -> CreditSummary {
-        // 打印 user_id 便于定位账号
-        let user_id = entitlements.user_entitlement_pack_list.first()
-            .map(|p| p.entitlement_base_info.user_id.clone())
-            .unwrap_or_else(|| "unknown".to_string());
-        println!("[DEBUG] ===== ASSEMBLE CREDIT SUMMARY for user_id={} ===== ({} packs)",
-            user_id, entitlements.user_entitlement_pack_list.len());
         if !switch.is_credits_billing {
             return CreditSummary {
                 is_credits_billing: false,
@@ -996,37 +1125,24 @@ impl TraeApiClient {
             let limit = quota.credits_limit;
             let used  = usage.credits_amount;
 
-            // status != 1 的 pack（比如未生效 / 已过期的免费兑换 pack 也显示，但不包含在主套餐里）
-            // 只统计 credits_limit > 0 且 is_hide == false 的条目
             if limit <= 0.0 || pack.is_hide {
-                println!("[DEBUG] SKIP pack: pid={} desc={:?} limit={} is_hide={} status={}",
-                    base.product_id, pack.display_desc, limit, pack.is_hide, pack.status);
                 continue;
             }
 
-            // 主套餐订阅（product_type == 0）的 end_time 作为 plan_expire_time
             if base.product_type == 0 && pack.status == 1 {
                 if base.end_time > plan_end_time { plan_end_time = base.end_time; }
             }
 
             let scope = match base.available_endpoint {
-                0 => "general",          // 通用：TraeCode + TraeWork
-                1 => "work_exclusive",   // Work 专属
+                0 => "general",
+                1 => "work_exclusive",
                 _ => "general",
             };
-
-            println!(
-                "[DEBUG] pack: pid={} ptype={} avail_ep={} -> scope={} | credits_limit={} used={} left={} | status={} group_type={} is_hide={} desc={:?} end={}",
-                base.product_id, base.product_type, base.available_endpoint, scope,
-                limit, used, limit - used, pack.status, pack.group_type, pack.is_hide, pack.display_desc, base.end_time,
-            );
 
             match scope {
                 "general" => {
                     general_total += limit;
                     general_used  += used;
-                    println!("[DEBUG]   -> general running: total={} used={} left={}",
-                        general_total, general_used, general_total - general_used);
                     if base.end_time > 0 && (general_nearest_expire == 0 || base.end_time < general_nearest_expire) {
                         general_nearest_expire = base.end_time;
                     }
@@ -1034,8 +1150,6 @@ impl TraeApiClient {
                 _ => {
                     work_total += limit;
                     work_used  += used;
-                    println!("[DEBUG]   -> work running: total={} used={} left={}",
-                        work_total, work_used, work_total - work_used);
                     if base.end_time > 0 && (work_nearest_expire == 0 || base.end_time < work_nearest_expire) {
                         work_nearest_expire = base.end_time;
                     }

@@ -55,6 +55,9 @@ temp_repo/
 
 # Claude AI
 .claude/
+CLAUDE.md
+
+.trae/
 
 # Application data (optional, uncomment if you don't want to track)
 # *.db

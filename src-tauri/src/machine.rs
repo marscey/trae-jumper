@@ -74,44 +74,6 @@ fn get_trae_data_path() -> Result<PathBuf> {
     Err(anyhow!("此功能仅支持 Windows 和 macOS 系统"))
 }
 
-/// 读取当前目标 Trae 客户端已登录账号的 userId（只读，不新增/修改账号）。
-///
-/// 从数据目录 `User/globalStorage/storage.json` 中取 `iCubeAuthInfo://icube.cloudide`，
-/// 经 crypto 解密后解析出 `userId`。客户端未登录/文件不存在时返回 `Ok(None)`。
-pub fn read_trae_login_user_id() -> Result<Option<String>> {
-    #[cfg(any(target_os = "windows", target_os = "macos"))]
-    let trae_path = get_trae_data_path()?;
-
-    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
-    let trae_path: PathBuf = {
-        return Err(anyhow!("此功能仅支持 Windows 和 macOS 系统"));
-    };
-
-    let storage_path = trae_path.join("User").join("globalStorage").join("storage.json");
-    if !storage_path.exists() {
-        return Ok(None);
-    }
-
-    let content = fs::read_to_string(&storage_path)
-        .map_err(|e| anyhow!("读取 storage.json 失败: {}", e))?;
-    let storage: serde_json::Value = serde_json::from_str(&content)
-        .map_err(|e| anyhow!("解析 storage.json 失败: {}", e))?;
-
-    let auth_info_raw = match storage
-        .get("iCubeAuthInfo://icube.cloudide")
-        .and_then(|v| v.as_str())
-    {
-        Some(s) => s,
-        None => return Ok(None), // 客户端未登录，无登录信息键
-    };
-
-    let auth_info_str = crate::crypto::read_storage_value(auth_info_raw);
-    let auth_info: serde_json::Value = serde_json::from_str(&auth_info_str)
-        .map_err(|e| anyhow!("解析认证信息失败: {}", e))?;
-
-    Ok(auth_info.get("userId").and_then(|v| v.as_str()).map(String::from))
-}
-
 /// 读取 Trae IDE 的机器码
 pub fn get_trae_machine_id() -> Result<String> {
     let trae_path = get_trae_data_path()?;
@@ -190,16 +152,37 @@ pub fn is_trae_running() -> bool {
     }
 }
 
+/// 通过 `ps` 查找命令行包含指定 pattern 的进程 PID 列表（macOS）。
+///
+/// 不使用 `pgrep -f`：Electron 类应用启动时会继承大量环境变量，导致进程参数列表
+/// 超出 pgrep 的读取上限，`pgrep -f <path>` 会漏判主进程（返回未运行），
+/// 进而导致切换账号时 kill_trae 提前返回、客户端未关闭重启、状态与实际脱节。
+/// `ps -axo pid=,command=` 无此限制，能可靠拿到主进程路径。
+#[cfg(target_os = "macos")]
+fn find_pids_by_pattern(pattern: &str) -> Vec<i32> {
+    let output = match Command::new("ps").args(["-axo", "pid=,command="]).output() {
+        Ok(o) => o,
+        Err(_) => return vec![],
+    };
+    let text = String::from_utf8_lossy(&output.stdout);
+    let mut pids = Vec::new();
+    for line in text.lines() {
+        if line.contains(pattern) {
+            if let Some(pid_str) = line.trim().split_whitespace().next() {
+                if let Ok(pid) = pid_str.parse::<i32>() {
+                    pids.push(pid);
+                }
+            }
+        }
+    }
+    pids
+}
+
 #[cfg(target_os = "macos")]
 pub fn is_trae_running() -> bool {
-    // 使用 pgrep -f 按当前目标应用的完整路径匹配（任一候选模式命中即视为运行中）
+    // 用 ps 匹配当前目标应用的进程路径（任一候选模式命中即视为运行中）
     for pattern in crate::trae_app::current().process_patterns {
-        let running = Command::new("pgrep")
-            .args(["-f", pattern])
-            .output()
-            .map(|out| out.status.success())
-            .unwrap_or(false);
-        if running {
+        if !find_pids_by_pattern(pattern).is_empty() {
             return true;
         }
     }
@@ -267,13 +250,13 @@ pub fn kill_trae() -> Result<()> {
     // 等待一小段时间
     std::thread::sleep(std::time::Duration::from_millis(1500));
 
-    // 如果还在运行，使用 pkill 强制关闭（逐个尝试变体路径模式）
+    // 如果还在运行，强制关闭（逐个尝试变体路径模式，用 ps 取 PID 后 kill -9）
     if is_trae_running() {
         println!("[INFO] 优雅关闭失败，正在强制关闭...");
         for pattern in variant.process_patterns {
-            let _ = Command::new("pkill")
-                .args(["-9", "-f", pattern])
-                .output();
+            for pid in find_pids_by_pattern(pattern) {
+                let _ = Command::new("kill").args(["-9", &pid.to_string()]).output();
+            }
         }
 
         // 再等待一下
@@ -285,6 +268,104 @@ pub fn kill_trae() -> Result<()> {
     }
 
     println!("[INFO] Trae IDE 已关闭");
+    Ok(())
+}
+
+/// 检查指定 Trae 客户端变体是否正在运行（macOS）
+#[cfg(target_os = "macos")]
+pub fn is_trae_running_for_variant(variant: &crate::trae_app::TraeAppVariant) -> bool {
+    for pattern in variant.process_patterns {
+        if !find_pids_by_pattern(pattern).is_empty() {
+            return true;
+        }
+    }
+    false
+}
+
+/// 关闭指定 Trae 客户端变体（macOS）
+#[cfg(target_os = "macos")]
+pub fn kill_trae_for_variant(variant: &crate::trae_app::TraeAppVariant) -> Result<()> {
+    if !is_trae_running_for_variant(variant) {
+        return Ok(());
+    }
+    println!("[INFO] 正在关闭 {}...", variant.display_name);
+    for name in variant.osascript_names {
+        let quit_script = format!("tell application \"{}\" to quit", name);
+        let _ = Command::new("osascript")
+            .args(["-e", &quit_script])
+            .output();
+    }
+    std::thread::sleep(std::time::Duration::from_millis(1500));
+    if is_trae_running_for_variant(variant) {
+        for pattern in variant.process_patterns {
+            for pid in find_pids_by_pattern(pattern) {
+                let _ = Command::new("kill").args(["-9", &pid.to_string()]).output();
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_millis(1000));
+    }
+    if is_trae_running_for_variant(variant) {
+        return Err(anyhow!("无法关闭 {}", variant.display_name));
+    }
+    println!("[INFO] {} 已关闭", variant.display_name);
+    Ok(())
+}
+
+/// 启动指定 Trae 客户端变体（macOS，优先用 bundle path，兜底 open -a）
+#[cfg(target_os = "macos")]
+pub fn launch_trae_for_variant(variant: &crate::trae_app::TraeAppVariant) -> Result<()> {
+    // 优先用 bundle path 直接打开（应用名可能与 .app 文件名不一致）
+    for bundle in variant.bundle_paths {
+        let path = if bundle.starts_with("~/") {
+            let home = std::env::var("HOME").unwrap_or_default();
+            bundle.replacen("~", &home, 1)
+        } else {
+            bundle.to_string()
+        };
+        if std::path::Path::new(&path).exists() {
+            let status = Command::new("open")
+                .arg(&path)
+                .status()
+                .map_err(|e| anyhow!("启动 {} 失败: {}", variant.display_name, e))?;
+            if status.success() {
+                println!("[INFO] 已启动 {} ({})", variant.display_name, path);
+                return Ok(());
+            }
+        }
+    }
+    // 兜底：用应用名
+    for name in variant.osascript_names {
+        let status = Command::new("open")
+            .args(["-a", name])
+            .status()
+            .map_err(|e| anyhow!("启动 {} 失败: {}", variant.display_name, e))?;
+        if status.success() {
+            println!("[INFO] 已启动 {}", variant.display_name);
+            return Ok(());
+        }
+    }
+    Err(anyhow!("无法启动 {}", variant.display_name))
+}
+
+// === Windows stub：变体级进程检测/关闭/启动暂未实现 ===
+// Windows 下统一走 is_trae_running() / kill_trae() 的通用实现，
+// 这三个变体级函数提供 no-op stub 避免 account_manager.rs 里的跨客户端活跃检测编译报错。
+
+/// 检查指定 Trae 客户端变体是否正在运行（Windows 暂未实现变体级检测，返回 false）
+#[cfg(target_os = "windows")]
+pub fn is_trae_running_for_variant(_variant: &crate::trae_app::TraeAppVariant) -> bool {
+    false
+}
+
+/// 关闭指定 Trae 客户端变体（Windows 暂未实现）
+#[cfg(target_os = "windows")]
+pub fn kill_trae_for_variant(_variant: &crate::trae_app::TraeAppVariant) -> Result<()> {
+    Ok(())
+}
+
+/// 启动指定 Trae 客户端变体（Windows 暂未实现）
+#[cfg(target_os = "windows")]
+pub fn launch_trae_for_variant(_variant: &crate::trae_app::TraeAppVariant) -> Result<()> {
     Ok(())
 }
 
@@ -468,7 +549,13 @@ pub struct TraeLoginInfo {
 
 /// 将账号登录信息写入 Trae IDE
 pub fn write_trae_login_info(info: &TraeLoginInfo) -> Result<()> {
-    let trae_path = get_trae_data_path()?;
+    write_trae_login_info_for_variant(info, None)
+}
+
+/// 将账号登录信息写入指定 Trae 客户端变体（variant=None 时使用当前目标客户端）
+pub fn write_trae_login_info_for_variant(info: &TraeLoginInfo, variant: Option<&crate::trae_app::TraeAppVariant>) -> Result<()> {
+    let variant = variant.unwrap_or_else(|| crate::trae_app::current());
+    let trae_path = crate::trae_app::data_dir_of(variant);
 
     // 确保目录存在
     let storage_dir = trae_path.join("User").join("globalStorage");
@@ -495,7 +582,6 @@ pub fn write_trae_login_info(info: &TraeLoginInfo) -> Result<()> {
     let refresh_expired_at = now + chrono::Duration::days(180);
 
     // 当前目标应用变体（决定 host 与区域格式）
-    let variant = crate::trae_app::current();
     let region = if variant.is_cn {
         "CN".to_string()
     } else {

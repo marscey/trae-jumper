@@ -141,6 +141,7 @@ body {
   height: 36px;
   flex-shrink: 0;
   overflow: hidden;
+  border-radius: 8px;
 }
 
 .logo-image {
@@ -972,6 +973,31 @@ body {
   box-shadow: 0 0 0 2px var(--success);
 }
 
+/* Expired account — muted card with red-tinted border (no grayscale, keep avatar normal) */
+.account-card.expired {
+  background: rgba(254, 242, 242, 0.6);
+  border-color: rgba(239, 68, 68, 0.35);
+}
+.account-card.expired::before {
+  background: linear-gradient(90deg, #ef4444 0%, #f87171 100%);
+  transform: scaleX(1);
+  opacity: 0.7;
+}
+.account-card.expired:hover {
+  background: rgba(254, 242, 242, 0.85);
+  border-color: rgba(239, 68, 68, 0.55);
+  box-shadow: var(--shadow-hover);
+}
+.account-card.expired .card-email,
+.account-card.expired .card-name {
+  color: var(--text-muted);
+}
+
+.account-list-item.expired {
+  background: linear-gradient(to right, rgba(239, 68, 68, 0.06), transparent 60%);
+  border-left: 3px solid rgba(239, 68, 68, 0.45);
+}
+
 .status-tag {
   display: inline-flex;
   align-items: center;
@@ -996,6 +1022,76 @@ body {
 .status-tag.expiring {
   background: var(--warning-bg);
   color: var(--warning);
+}
+
+/* 客户端登录中：单活跃 Token 下该账号会话由 Trae 客户端持有，
+   TraeJumper 侧 Token 失效属预期让位行为，用蓝色（而非红色）提示 */
+.status-tag.client-active {
+  background: var(--info-bg);
+  color: var(--info);
+}
+
+/* 状态标签旁的剩余时长提示，弱化显示 */
+.status-tag .status-hint {
+  opacity: 0.7;
+  font-weight: 400;
+}
+
+/* 手动续签按钮 */
+.refresh-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  min-width: 56px;
+  padding: 3px 10px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--bg-secondary);
+  color: var(--text-secondary);
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.15s;
+  white-space: nowrap;
+}
+.refresh-btn:hover:not(:disabled) {
+  border-color: var(--primary);
+  color: var(--primary);
+}
+.refresh-btn:disabled,
+.refresh-btn.disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.refresh-btn.loading {
+  /* 覆盖全局 .loading 遮罩类对按钮的污染 */
+  display: inline-flex;
+  flex-direction: row;
+  align-items: center;
+  justify-content: center;
+  padding: 3px 10px;
+  background: var(--bg-secondary);
+  border-radius: 12px;
+  box-shadow: none;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  animation: none;
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
+}
+.refresh-btn.loading svg {
+  animation: spin 1s linear infinite;
+}
+.refresh-btn-list {
+  padding: 4px;
+  border-radius: 6px;
+}
+.refresh-btn-list:hover:not(:disabled) {
+  background: var(--bg-hover);
+}
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
 }
 
 .status-dot {
@@ -1152,7 +1248,9 @@ body {
   color: var(--text-muted);
   padding-top: 12px;
   border-top: 1px solid var(--border-light);
-  flex-wrap: nowrap;
+  /* 空间不足时折行显示完整时间格式（最佳实践：宁可换行也不截断时间信息） */
+  flex-wrap: wrap;
+  row-gap: 4px;
   overflow: hidden;
   white-space: nowrap;
 }
@@ -1428,13 +1526,61 @@ body {
   text-decoration: none;
 }
 
+/* ===== 登录态来源标签（账号列表/卡片展示） ===== */
+.login-source-tag {
+  display: inline-flex;
+  align-items: center;
+  margin-left: 6px;
+  padding: 0 6px;
+  height: 16px;
+  border-radius: 8px;
+  font-size: 10px;
+  line-height: 1;
+  font-weight: 500;
+  color: var(--text-muted, #8b93a7);
+  background: rgba(127, 136, 158, 0.12);
+  border: 1px solid rgba(127, 136, 158, 0.18);
+  white-space: nowrap;
+  vertical-align: middle;
+}
+.card-info:hover .login-source-tag,
+.list-item-info:hover .login-source-tag {
+  color: #ffffff;
+  background: rgba(139, 147, 167, 0.28);
+  border-color: rgba(255, 255, 255, 0.25);
+}
+
+/* 登录态大类低饱和淡色（同亮度带，不抢 token/签到状态色的视觉焦点）：
+   切号注入=淡蓝 / 原生OAuth=淡紫 / 纯来源=灰(基座样式) */
+.login-source-tag.injected {
+  color: #5b7c9e;
+  background: rgba(91, 124, 158, 0.12);
+  border-color: rgba(91, 124, 158, 0.2);
+}
+
+.login-source-tag.native {
+  color: #7a6ba6;
+  background: rgba(122, 107, 166, 0.12);
+  border-color: rgba(122, 107, 166, 0.2);
+}
+
+.card-info:hover .login-source-tag.injected,
+.list-item-info:hover .login-source-tag.injected {
+  background: rgba(91, 124, 158, 0.3);
+}
+
+.card-info:hover .login-source-tag.native,
+.list-item-info:hover .login-source-tag.native {
+  background: rgba(122, 107, 166, 0.3);
+}
+
 /* ===== Expiry Date Color Coding ===== */
-/* 颜色编码规则：
-   - .expiry-expired: 已过期 (< 0 天) — 红色加粗
-   - .expiry-urgent:  紧急预警 (0-3 天) — 红色加粗
+/* 颜色编码规则（绿/橙/红 三色，状态一目了然）：
+   - .expiry-expired: 已过期 (< 0) — 红色加粗
+   - .expiry-urgent:  紧急预警 (积分 ≤3 天 / token <3 小时) — 红色加粗
    - .expiry-near:    临近预警 (4-7 天) — 橙色
-   - .expiry-safe:    安全 (> 7 天 或 永久) — 默认灰色
-   对比度：红/橙对白底背景对比度均 > 4.5:1 (WCAG AA)，可访问性达标 */
+   - .expiry-safe:    安全 — 绿色
+   对比度：红/橙/绿对白底背景对比度均 > 4.5:1 (WCAG AA)，可访问性达标 */
 .expiry-expired,
 .expiry-urgent {
   color: var(--danger);
@@ -1447,8 +1593,8 @@ body {
 }
 
 .expiry-safe {
-  color: var(--text-muted);
-  font-weight: 400;
+  color: var(--success);
+  font-weight: 500;
 }
 
 /* No available credits — 无可用积分提示 */
@@ -1503,6 +1649,30 @@ body {
   color: var(--text-primary);
 }
 
+/* 覆盖全局 .loading 遮罩类对按钮的污染 */
+.action-btn.loading {
+  display: inline-flex;
+  flex-direction: row;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  background: var(--bg-hover);
+  border: none;
+  border-radius: 7px;
+  box-shadow: none;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  animation: none;
+  color: var(--text-primary);
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+.action-btn.loading svg {
+  animation: spin 1s linear infinite;
+}
+
 /* Account current indicator for list — 继承全局 .plan-badge.current 的强光效果，无需覆盖 */
 
 /* Meta Item with Icon */
@@ -1533,6 +1703,8 @@ body {
   z-index: 1001;
   border: 1px solid var(--border-light);
   animation: contextMenuIn 0.15s ease-out;
+  max-height: calc(100vh - 16px);
+  overflow-y: auto;
 }
 
 @keyframes contextMenuIn {
@@ -1705,6 +1877,124 @@ body {
 }
 
 .add-account-modal .modal-actions-fixed button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+  transform: none;
+}
+
+/* ===== 方案 B：browser 模式全屏布局（子 webview 内嵌） ===== */
+.modal-content-fullscreen {
+  position: fixed !important;
+  inset: 0;
+  width: 100% !important;
+  max-width: 100% !important;
+  height: 100% !important;
+  max-height: 100% !important;
+  display: flex;
+  flex-direction: column;
+  border-radius: 0;
+  padding: 0;
+  overflow: hidden;
+}
+
+/* 标题栏固定 56px（与 Rust 端 header_h 对齐） */
+.modal-content-fullscreen .modal-header-fixed {
+  height: 56px;
+  padding: 0 28px;
+  flex-shrink: 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.modal-content-fullscreen .modal-header-fixed h2 {
+  font-size: 16px;
+  font-weight: 700;
+  margin: 0;
+}
+
+/* 中部 flex-1，browser 开窗后被子 webview 遮挡 */
+.modal-content-fullscreen .modal-body-scrollable {
+  flex: 1;
+  overflow: hidden;
+  padding: 0;
+}
+
+/* browser 开窗后中部占位（被子 webview 遮挡，仅占位） */
+.modal-body-webview-placeholder {
+  flex: 1;
+  background: var(--bg-primary);
+}
+
+/* 按钮栏固定 56px（与 Rust 端 footer_h 对齐，状态行 + 按钮一行布局） */
+.modal-content-fullscreen .modal-actions-fixed {
+  height: 56px;
+  padding: 0 28px;
+  flex-direction: row;
+  align-items: center;
+  gap: 16px;
+  flex-shrink: 0;
+}
+
+.browser-actions-container {
+  display: flex;
+  flex-direction: row;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 16px;
+  width: 100%;
+}
+
+.probe-status-line {
+  flex: 1;
+  min-width: 0;
+  font-size: 12px;
+  font-weight: 500;
+  text-align: left;
+  width: 100%;
+  min-height: 16px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.modal-actions-row {
+  display: flex;
+  flex-wrap: nowrap;
+  gap: 12px;
+  justify-content: flex-end;
+  flex-shrink: 0;
+}
+
+.modal-actions-row button {
+  padding: 8px 20px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.modal-actions-row button:hover {
+  background: var(--bg-hover);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.modal-actions-row button.primary {
+  background: var(--gradient-accent);
+  color: white;
+  border: none;
+  box-shadow: var(--shadow-accent);
+}
+
+.modal-actions-row button.primary:hover {
+  box-shadow: 0 10px 20px rgba(14, 165, 233, 0.4);
+  transform: translateY(-1px);
+}
+
+.modal-actions-row button:disabled {
   opacity: 0.6;
   cursor: not-allowed;
   transform: none;
@@ -2230,6 +2520,23 @@ body {
   color: var(--text-primary);
 }
 
+.modal-header-title-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.modal-header-subtitle {
+  font-size: 13px;
+  font-weight: 400;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 480px;
+}
+
 .modal-close-btn {
   display: flex;
   align-items: center;
@@ -2259,7 +2566,10 @@ body {
 
 .modal-actions-fixed {
   display: flex;
+  flex-direction: row;
+  flex-wrap: nowrap;
   justify-content: flex-end;
+  align-items: center;
   gap: 12px;
   padding: 20px 28px;
   border-top: 1px solid var(--border);
@@ -2277,6 +2587,8 @@ body {
   font-weight: 500;
   cursor: pointer;
   transition: all var(--transition);
+  flex-shrink: 0;
+  width: auto;
 }
 
 .modal-actions-fixed button:hover {
@@ -2592,6 +2904,15 @@ body {
 
 .secret-label svg {
   color: #b5bac5;
+}
+
+.secret-expiry {
+  font-size: 11px;
+  font-weight: 400;
+  color: #6b7280;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .secret-value-wrap {
@@ -4173,6 +4494,7 @@ body {
   width: 100%;
   height: 100%;
   object-fit: contain;
+  border-radius: 16px;
 }
 
 .about-card h3 {
@@ -4830,17 +5152,12 @@ body {
 
 /* Usage Events */
 .usage-events {
-  background: var(--bg-card);
-  border-radius: var(--radius-lg);
-  padding: var(--space-2xl);
-  margin-bottom: var(--space-2xl);
-  box-shadow: var(--shadow-sm);
-  border: 1px solid var(--border);
+  width: 100%;
 }
 
 .usage-events-header {
   display: flex;
-  justify-content: space-between;
+  justify-content: flex-start;
   align-items: center;
   margin-bottom: var(--space-xl);
   flex-wrap: wrap;
@@ -4973,20 +5290,23 @@ body {
   box-shadow: var(--shadow);
 }
 
+.date-picker-error {
+  color: #f44336;
+  font-size: 12px;
+  margin-top: 6px;
+}
+
 .usage-events-table-container {
   overflow-x: auto;
-  border-radius: var(--radius);
-  border: 1px solid var(--border);
 }
 
 .usage-events-table {
   width: 100%;
   border-collapse: collapse;
-  background: var(--bg-secondary);
 }
 
 .usage-events-table thead {
-  background: var(--bg-primary);
+  background: var(--bg-secondary);
   border-bottom: 1px solid var(--border);
 }
 
@@ -5032,6 +5352,20 @@ body {
   color: var(--text-primary);
 }
 
+.usage-events-table .usage-preview-cell {
+  max-width: 320px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-secondary);
+}
+
+.usage-events-table .credits-cell {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  font-weight: 500;
+}
+
 .loading-state,
 .empty-state {
   padding: 60px 20px;
@@ -5061,10 +5395,6 @@ body {
 
 /* Responsive */
 @media (max-width: 768px) {
-  .usage-events {
-    padding: var(--space-lg);
-  }
-
   .usage-events-header {
     flex-direction: column;
     align-items: flex-start;

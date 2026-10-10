@@ -9,7 +9,12 @@ interface AccountListItemProps {
     plan_type: string;
     created_at: number;
     is_current?: boolean;
+    is_client_active?: boolean;
+    active_in_clients?: string[];
+    has_cookies?: boolean;
     token_expired_at?: string | null;
+    login_source?: string;
+    login_type?: string;
     checkin_status?: CheckinStatusResult;
   };
   usage: UsageSummary | null;
@@ -19,10 +24,48 @@ interface AccountListItemProps {
   onSelect: (id: string) => void;
   onContextMenu: (e: React.MouseEvent, id: string) => void;
   onViewDetail: (id: string) => void;
+  onRefresh?: (id: string) => void;
+  refreshing?: boolean;
+  onRenewClient?: (id: string) => void;
+  renewingClient?: boolean;
 }
 
-export function AccountListItem({ account, usage, credits, creditsLoading, selected, onSelect, onContextMenu, onViewDetail }: AccountListItemProps) {
+// 登录来源展示名（用于列表标签）
+function sourceLabel(src?: string): string {
+  switch (src) {
+    case "client_import": return "客户端导入";
+    case "webview": return "WebView登录";
+    case "cookie": return "Cookie登录";
+    case "manual_token": return "手动Token";
+    default: return "未分类";
+  }
+}
+// 登录态类型展示名：原生OAuth / 切号注入·来源 / 仅库内·来源
+function loginTypeLabel(src?: string, type?: string): string {
+  if (type === "native_o_auth") return "原生OAuth";
+  if (type === "injected") return `切号注入·${sourceLabel(src)}`;
+  return sourceLabel(src);
+}
+// 登录态大类样式（低饱和淡色区分，不抢状态色）：
+// 切号注入=淡蓝 / 原生OAuth=淡紫 / 纯来源=灰
+function loginTypeClass(type?: string): string {
+  if (type === "injected") return "login-source-tag injected";
+  if (type === "native_o_auth") return "login-source-tag native";
+  return "login-source-tag";
+}
+
+export function AccountListItem({ account, usage, credits, creditsLoading, selected, onSelect, onContextMenu, onViewDetail, onRefresh, refreshing, onRenewClient, renewingClient }: AccountListItemProps) {
   const isCredits = !!credits?.is_credits_billing;
+
+  // 将客户端显示名映射为短标签
+  const shortClientName = (name: string): string => {
+    if (name.includes("TraeCode")) return "TraeCode";
+    if (name.includes("TraeWork") || name.includes("SOLO")) return "TraeWork";
+    if (name.includes("国际")) return "Trae国际";
+    return name;
+  };
+  const activeClients = (account.active_in_clients || []).map(shortClientName);
+  const currentTagText = activeClients.length > 0 ? `${activeClients.join(" & ")} 当前` : "";
 
   const formatCredits = (v: number) => {
     const n = Number.isFinite(v) ? v : 0;
@@ -52,7 +95,10 @@ export function AccountListItem({ account, usage, credits, creditsLoading, selec
     return "var(--success)";
   };
 
-  const getTokenStatus = (): "normal" | "expiring" | "expired" | "unknown" => {
+  const getTokenStatus = (): "normal" | "expiring" | "expired" | "unknown" | "client-active" => {
+    // 客户端登录中的账号：单活跃 Token 下客户端持有有效会话，
+    // TraeJumper 侧 Token 失效属预期让位行为，不应显示"已过期"
+    if (account.is_client_active) return "client-active";
     if (!account.token_expired_at) return "unknown";
     const expiry = new Date(account.token_expired_at).getTime();
     if (isNaN(expiry)) return "unknown";
@@ -62,14 +108,33 @@ export function AccountListItem({ account, usage, credits, creditsLoading, selec
     return "normal";
   };
 
+  // Token 过期的相对时长描述（仅 expiring/expired 时展示，健康账号保持简洁）
+  const getTokenExpiryHint = (): string => {
+    if (tokenStatus !== "expiring" && tokenStatus !== "expired") return "";
+    if (!account.token_expired_at) return "";
+    const expiry = new Date(account.token_expired_at).getTime();
+    if (isNaN(expiry)) return "";
+    const diffMs = expiry - Date.now();
+    const absMin = Math.floor(Math.abs(diffMs) / 60000);
+    if (absMin < 60) return diffMs >= 0 ? `剩 ${absMin}分钟` : `${absMin}分钟前`;
+    const hours = absMin / 60;
+    if (hours < 24) return diffMs >= 0 ? `剩 ${hours.toFixed(1)}h` : `${hours.toFixed(1)}h 前`;
+    const days = hours / 24;
+    return diffMs >= 0 ? `剩 ${days.toFixed(1)}天` : `${days.toFixed(1)}天前`;
+  };
+
   const tokenStatus = getTokenStatus();
-  const statusText = tokenStatus === "expired" ? "已过期" : tokenStatus === "expiring" ? "即将过期" : "正常";
+  const expiryHint = getTokenExpiryHint();
+  const statusText = tokenStatus === "expired" ? "已过期" : tokenStatus === "expiring" ? "即将过期" : tokenStatus === "client-active" ? "客户端登录中" : "正常";
+  const expiryTooltip = account.token_expired_at
+    ? `过期时间: ${new Date(account.token_expired_at).toLocaleString("zh-CN")}`
+    : "无过期时间信息";
   const displayName = account.email || account.name;
   const avatarLetter = (account.email || account.name || "?").charAt(0).toUpperCase();
 
   return (
     <div
-      className={`account-list-item ${selected ? "selected" : ""} ${account.is_current ? "current" : ""}`}
+      className={`account-list-item ${selected ? "selected" : ""} ${activeClients.length > 0 && tokenStatus !== "expired" ? "current" : ""} ${tokenStatus === "expired" ? "expired" : ""}`}
       onClick={() => onSelect(account.id)}
       onContextMenu={(e) => onContextMenu(e, account.id)}
     >
@@ -92,23 +157,27 @@ export function AccountListItem({ account, usage, credits, creditsLoading, selec
       <div className="list-item-info" onClick={(e) => { e.stopPropagation(); onViewDetail(account.id); }} title="查看详情">
         <span className="list-item-email">
           {displayName}
-          {account.is_current && (
-            <span className="current-tag-inline" title="当前激活账号">
+          {currentTagText && tokenStatus !== "expired" && (
+            <span className="current-tag-inline" title={activeClients.join("、")}>
               <span className="current-tag-check">✓</span>
-              当前
+              {currentTagText}
             </span>
           )}
         </span>
         <span className="list-item-sub">Trae 账号</span>
+        <span className={loginTypeClass(account.login_type)} title={`登录态类型：${loginTypeLabel(account.login_source, account.login_type)}`}>
+          {loginTypeLabel(account.login_source, account.login_type)}
+        </span>
       </div>
 
       <div className="list-item-badges">
         <span className={`plan-badge ${planLabel.toLowerCase() === "free" ? "free" : ""}`}>{planLabel}</span>
-        <span className={`status-tag ${tokenStatus === "expired" ? "expired" : tokenStatus === "expiring" ? "expiring" : "normal"}`}>
+        <span className={`status-tag ${tokenStatus === "expired" ? "expired" : tokenStatus === "expiring" ? "expiring" : tokenStatus === "client-active" ? "client-active" : "normal"}`} title={expiryTooltip}>
           <span className="status-dot"></span>
           {statusText}
+          {expiryHint && <span className="status-hint"> · {expiryHint}</span>}
         </span>
-        {account.checkin_status && account.checkin_status.code === 0 && (
+        {account.checkin_status && account.checkin_status.code === 0 && tokenStatus !== "expired" && (
           account.checkin_status.checked_in ? (
             <span className="checkin-tag checked" title={`今日已签到 +${account.checkin_status.credits || 200}`}>
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" width="10" height="10">
@@ -163,6 +232,36 @@ export function AccountListItem({ account, usage, credits, creditsLoading, selec
       </div>
 
       <div className="list-item-actions">
+        {onRefresh && account.has_cookies && !account.is_client_active && (
+          <button
+            className={`action-btn refresh-btn-list ${refreshing ? "loading" : ""}`}
+            title="手动续签 Token"
+            onClick={(e) => { e.stopPropagation(); onRefresh(account.id); }}
+            disabled={refreshing}
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <path d="M23 4v6h-6"/>
+              <path d="M1 20v-6h6"/>
+              <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>
+            </svg>
+          </button>
+        )}
+        {onRenewClient && account.is_client_active && account.has_cookies && (
+          <button
+            className={`action-btn ${renewingClient ? "loading" : ""}`}
+            title="续签并写回客户端（手动测试：立即 GetUserToken 续签并写入客户端存储）"
+            onClick={(e) => { e.stopPropagation(); onRenewClient(account.id); }}
+            disabled={renewingClient}
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <path d="M23 4v6h-6"/>
+              <path d="M1 20v-6h6"/>
+              <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>
+              <path d="M3 12h18" />
+              <path d="M12 3v18" />
+            </svg>
+          </button>
+        )}
         <button
           className="action-btn"
           title="更多操作 (右键)"

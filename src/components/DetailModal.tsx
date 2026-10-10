@@ -12,6 +12,8 @@ interface DetailModalProps {
     plan_type: string;
     cookies?: string;
     jwt_token?: string | null;
+    token_expired_at?: string | null;
+    last_cookie_renewal_at?: number | null;
   } | null;
   usage: UsageSummary | null;
   credits?: CreditSummary | null;
@@ -84,6 +86,37 @@ export function DetailModal({ isOpen, onClose, account, usage, credits }: Detail
     if (!timestamp) return "-";
     return new Date(timestamp * 1000).toLocaleString("zh-CN");
   };
+
+  /** 格式化 RFC3339 时间字符串（token_expired_at）为本地时间 */
+  const formatRfc3339 = (s: string | null | undefined): string => {
+    if (!s) return "未知";
+    const d = new Date(s);
+    if (isNaN(d.getTime())) return "未知";
+    return d.toLocaleString("zh-CN");
+  };
+
+  /** Token 过期状态：expired=已过期 / soon=2h 内过期 / ok=正常 */
+  const tokenExpiryStatus = (s: string | null | undefined): "expired" | "soon" | "ok" | "unknown" => {
+    if (!s) return "unknown";
+    const d = new Date(s);
+    if (isNaN(d.getTime())) return "unknown";
+    const diffMs = d.getTime() - Date.now();
+    if (diffMs <= 0) return "expired";
+    if (diffMs <= 2 * 60 * 60 * 1000) return "soon";
+    return "ok";
+  };
+
+  const tokenExpiryMeta = (() => {
+    const status = tokenExpiryStatus(acct.token_expired_at);
+    const expiryText = formatRfc3339(acct.token_expired_at);
+    const labelMap: Record<string, { label: string; color: string }> = {
+      ok: { label: "有效", color: "#4caf50" },
+      soon: { label: "即将过期", color: "#ff9800" },
+      expired: { label: "已过期", color: "#f44336" },
+      unknown: { label: "未知", color: "#8a8f9c" },
+    };
+    return { status, expiryText, ...labelMap[status] };
+  })();
 
   const formatNumber = (num: number) => {
     const v = Number.isFinite(num) ? num : 0;
@@ -382,6 +415,9 @@ export function DetailModal({ isOpen, onClose, account, usage, credits }: Detail
                         <path d="M7 11V7a5 5 0 0 1 10 0v4"/>
                       </svg>
                       Token
+                      <span className="secret-expiry" style={{ color: tokenExpiryMeta.color }} title={`过期时间: ${tokenExpiryMeta.expiryText}`}>
+                        · {tokenExpiryMeta.expiryText}
+                      </span>
                     </div>
                     <div className="secret-value-wrap">
                       <code className="secret-code">{acct.jwt_token}</code>
@@ -410,6 +446,15 @@ export function DetailModal({ isOpen, onClose, account, usage, credits }: Detail
                         <line x1="15" y1="9" x2="15.01" y2="9"/>
                       </svg>
                       Cookies
+                      {acct.last_cookie_renewal_at ? (
+                        <span className="secret-expiry" title="cookies 需每 12 小时续签一次以保持 session 活跃">
+                          · 上次续签 {formatDate(acct.last_cookie_renewal_at)}
+                        </span>
+                      ) : (
+                        <span className="secret-expiry" style={{ color: "#8a8f9c" }}>
+                          · 尚未续签
+                        </span>
+                      )}
                     </div>
                     <div className="secret-value-wrap">
                       <code className="secret-code">{acct.cookies}</code>

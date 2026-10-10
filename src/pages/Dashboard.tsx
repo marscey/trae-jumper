@@ -1,7 +1,6 @@
 import { memo } from 'react';
 import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer } from 'recharts';
 import type { UsageSummary, CreditSummary } from "../types";
-import { UsageEvents } from "../components/UsageEvents";
 
 interface DashboardProps {
   accounts: Array<{
@@ -242,8 +241,6 @@ export const Dashboard = memo(function Dashboard({ accounts, currentClientName }
 
       {accounts.length > 0 && (
         <>
-          <UsageEvents accountId={accounts.find(a => a.is_current)?.id || accounts[0]?.id || ''} />
-
           <div className="accounts-preview">
             <div className="preview-header">
               <h3>账号概览</h3>

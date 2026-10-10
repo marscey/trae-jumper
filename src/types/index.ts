@@ -9,7 +9,18 @@ export interface AccountBrief {
   created_at: number;
   machine_id: string | null;
   is_current: boolean; // 是否是当前 Trae IDE 正在使用的账号
+  is_client_active: boolean; // 是否是 Trae 客户端当前登录的账号（单活跃 Token 下由客户端持有有效会话）
+  /** 该账号正在哪些 Trae 客户端中登录（显示名称列表），用于多客户端"当前"标签 */
+  active_in_clients: string[];
+  /** 是否有 cookies（浏览器导入的账号才有，可续签；客户端导入/手动Token无 cookies） */
+  has_cookies: boolean;
   token_expired_at: string | null; // Token 过期时间
+  /** 上次通过 cookies 续签 token 的时间戳（秒）。cookies 本身无明确过期时间，需每 12h 续签保持 session */
+  last_cookie_renewal_at: number | null;
+  /** 登录来源：client_import / webview / cookie / manual_token / unknown（新建打标，存量 unknown） */
+  login_source: string;
+  /** 登录态类型：native_o_auth（客户端原生OAuth）/ injected（切号注入）/ standalone（仅库内） */
+  login_type: string;
   /** 今日签到状态（启动时/点击刷新查询，可能为 undefined 表示未查） */
   checkin_status?: CheckinStatusResult;
 }
@@ -23,6 +34,7 @@ export interface Account {
   cookies: string;
   jwt_token: string | null;
   token_expired_at: string | null;
+  last_cookie_renewal_at: number | null;
   user_id: string;
   tenant_id: string;
   region: string;
@@ -74,8 +86,11 @@ export interface UsageEvent {
   model_name: string;
   amount_float: number;
   cost_money_float: number;
+  credits_float: number;
   use_max_mode: boolean;
   product_type_list: number[];
+  usage_source: number;
+  user_input_preview: string;
   extra_info: {
     cache_read_token: number;
     cache_write_token: number;
@@ -95,7 +110,7 @@ export interface ApiError {
   message: string;
 }
 
-// Trae 应用变体信息（Trae CN / TRAE SOLO CN / 国际版）
+// Trae 应用变体信息（TRAE CN / TraeWork CN / 国际版）
 export interface TraeAppInfo {
   key: string;
   display_name: string;
@@ -187,4 +202,16 @@ export interface CheckinConfig {
   status_delay_max: number;
   claim_delay_min: number;
   claim_delay_max: number;
+  /** 是否开启自动刷新（定时刷新账号使用量数据） */
+  auto_refresh_enabled: boolean;
+  /** 自动刷新间隔（分钟），可选值：5 / 10 / 30 / 60 */
+  auto_refresh_interval: number;
+  /** 是否开启自动签到（晚于设定时间后自动为未签到账号签到） */
+  auto_checkin_enabled: boolean;
+  /** 自动签到触发时间点（HH:mm，24 小时制），例如 "22:00" */
+  auto_checkin_time: string;
+  /** 是否开启日志文件运行中自动重建（watchdog 每 interval 秒检查一次，发现日志被外部删除/替换则自动重建） */
+  log_watchdog_enabled: boolean;
+  /** 日志 watchdog 检查间隔（秒），最小 2 */
+  log_watchdog_interval: number;
 }

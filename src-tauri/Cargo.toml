@@ -1,6 +1,6 @@
 [package]
 name = "trae-jumper"
-version = "0.9.10"
+version = "1.0.0"
 description = "TraeJumper - 轻松管理 Trae 账号的小工具"
 authors = ["marscey"]
 edition = "2021"
@@ -13,7 +13,7 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = ["tray-icon", "image-png"] }
+tauri = { version = "2", features = ["tray-icon", "image-png", "unstable"] }
 tauri-plugin-opener = "2"
 tauri-plugin-deep-link = "2"
 serde = { version = "1", features = ["derive"] }
@@ -39,6 +39,9 @@ rand = "0.8"
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.52"
+libc = "0.2"
+windows-sys = { version = "0.59", features = ["Win32_System_Console"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 core-foundation = "0.10"
+libc = "0.2"

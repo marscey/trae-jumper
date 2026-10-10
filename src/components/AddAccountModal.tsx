@@ -24,15 +24,20 @@ export function AddAccountModal({ isOpen, onClose, onAdd, onToast, onAccountAdde
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [browserLoginStarted, setBrowserLoginStarted] = useState(false);
+  const [confirming, setConfirming] = useState(false);
 
-  // 监听浏览器登录事件（仅在 Tauri 环境下注册）
+  // 监听浏览器登录结果事件（仅 Tauri 环境下注册）
+  // 登录界面以内嵌子 webview 形式渲染在主窗口内，没有独立窗口可被用户关闭，
+  // 取消动作由前端主动调用 closeLoginWebview 完成，因此无需 login-cancelled。
   useEffect(() => {
     if (!api.hasTauri()) return;
     const unlistenSuccess = listen<string>("login-success", (event) => {
-      onToast?.("success", `浏览器登录成功: ${event.payload}`);
-      onAccountAdded?.();
+      console.log("[AddAccountModal] login-success:", event.payload);
+      // 先关闭弹窗，再刷新数据，避免刷新异常导致弹窗不关
       setBrowserLoginStarted(false);
       handleCloseInternal();
+      onToast?.("success", `浏览器登录成功: ${event.payload}`);
+      onAccountAdded?.();
     });
 
     const unlistenFailed = listen<string>("login-failed", (event) => {
@@ -40,16 +45,27 @@ export function AddAccountModal({ isOpen, onClose, onAdd, onToast, onAccountAdde
       setBrowserLoginStarted(false);
     });
 
-    const unlistenCancelled = listen("login-cancelled", () => {
-      setBrowserLoginStarted(false);
-    });
-
     return () => {
       unlistenSuccess.then((fn) => fn());
       unlistenFailed.then((fn) => fn());
-      unlistenCancelled.then((fn) => fn());
     };
   }, []);
+
+  // 浏览器登录打开期间监听主窗口 resize，让子 webview 跟随尺寸变化
+  useEffect(() => {
+    if (!api.hasTauri() || !browserLoginStarted) return;
+    let lastCall = 0;
+    const onResize = () => {
+      const now = Date.now();
+      if (now - lastCall < 100) return; // 100ms 节流
+      lastCall = now;
+      api.resizeLoginChildWebview().catch(() => {});
+    };
+    window.addEventListener("resize", onResize);
+    // 立即同步一次（某些情况下首次添加子 webview 位置可能不准）
+    onResize();
+    return () => window.removeEventListener("resize", onResize);
+  }, [browserLoginStarted]);
 
   if (!isOpen) return null;
 
@@ -190,7 +206,37 @@ export function AddAccountModal({ isOpen, onClose, onAdd, onToast, onAccountAdde
     }
   };
 
+  // 确认登录（手动确认，读取 webview 中的 token + cookies 新增账号）
+  const handleConfirmLogin = async () => {
+    setConfirming(true);
+    setError("");
+    try {
+      const email = await api.applyLoginWebviewNewAccount();
+      setBrowserLoginStarted(false);
+      handleCloseInternal();
+      onToast?.("success", `浏览器登录成功: ${email}`);
+      onAccountAdded?.();
+    } catch (err: any) {
+      const msg = err.message || "确认登录失败，请确保已在上方完成登录";
+      setError(msg);
+      // 账号已存在时，提示并自动关闭弹窗
+      if (msg.includes("已存在")) {
+        onToast?.("warning", "该账号已在列表中，无需重复添加");
+        setTimeout(() => {
+          setBrowserLoginStarted(false);
+          handleCloseInternal();
+        }, 1500);
+      }
+    } finally {
+      setConfirming(false);
+    }
+  };
+
   const handleCloseInternal = () => {
+    // 若登录子 webview 还开着，销毁它（fire-and-forget）
+    if (browserLoginStarted) {
+      api.closeLoginWebview().catch(() => {});
+    }
     setError("");
     setTokenInput("");
     setCookiesInput("");
@@ -201,7 +247,10 @@ export function AddAccountModal({ isOpen, onClose, onAdd, onToast, onAccountAdde
 
   return (
     <div className="modal-overlay" onClick={handleCloseInternal}>
-      <div className="modal-content add-account-modal" onClick={(e) => e.stopPropagation()}>
+      <div
+        className={`modal-content ${mode === "browser" ? "modal-content-fullscreen" : "add-account-modal"}`}
+        onClick={(e) => e.stopPropagation()}
+      >
         <div className="modal-header-fixed">
           <h2>添加账号</h2>
           <button className="modal-close-btn" onClick={handleCloseInternal}>
@@ -268,27 +317,27 @@ export function AddAccountModal({ isOpen, onClose, onAdd, onToast, onAccountAdde
               {error && <div className="error-message">{error}</div>}
             </div>
           ) : mode === "browser" ? (
-            /* 浏览器登录模式 */
-            <div className="trae-ide-mode">
-              <div className="mode-description-simple">
-                <div className="mode-icon">
-                  <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
-                    <circle cx="12" cy="12" r="10"/>
-                    <line x1="2" y1="12" x2="22" y2="12"/>
-                    <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>
-                  </svg>
+            /* 浏览器登录：开窗后中部由子 webview 占据，React 留空 */
+            !browserLoginStarted ? (
+              <div className="trae-ide-mode">
+                <div className="mode-description-simple">
+                  <div className="mode-icon">
+                    <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+                      <circle cx="12" cy="12" r="10"/>
+                      <line x1="2" y1="12" x2="22" y2="12"/>
+                      <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>
+                    </svg>
+                  </div>
+                  <h3>浏览器授权登录</h3>
+                  <p>登录界面会内嵌在本弹窗中，在其中登录 {loginSite} 账号，系统自动提取 Cookies 并添加账号</p>
                 </div>
-                <h3>浏览器授权登录</h3>
-                <p>将打开一个登录窗口，在其中登录 {loginSite} 账号，系统将自动提取 Cookies 并添加账号</p>
-                {browserLoginStarted && (
-                  <p style={{ color: "var(--color-warning, #f0a030)", marginTop: "8px" }}>
-                    登录窗口已打开，请在窗口中完成登录...
-                  </p>
-                )}
-              </div>
 
-              {error && <div className="error-message">{error}</div>}
-            </div>
+                {error && <div className="error-message">{error}</div>}
+              </div>
+            ) : (
+              /* browserLoginStarted：中部留空，子 webview（Rust 创建）占据此区域 */
+              <div className="modal-body-webview-placeholder" />
+            )
           ) : (
             /* 手动输入模式 */
             <div className="manual-mode">
@@ -348,36 +397,66 @@ export function AddAccountModal({ isOpen, onClose, onAdd, onToast, onAccountAdde
         </div>
 
         <div className="modal-actions-fixed">
-          <button type="button" onClick={handleCloseInternal} disabled={loading}>
-            取消
-          </button>
-          {mode === "trae-ide" ? (
-            <button
-              type="button"
-              className="primary"
-              onClick={handleReadTraeAccount}
-              disabled={loading}
-            >
-              {loading ? "读取中..." : "读取 Trae 账号"}
-            </button>
-          ) : mode === "browser" ? (
-            <button
-              type="button"
-              className="primary"
-              onClick={handleBrowserLogin}
-              disabled={loading || browserLoginStarted}
-            >
-              {browserLoginStarted ? "等待登录中..." : loading ? "打开中..." : "打开登录窗口"}
-            </button>
+          {mode === "browser" && browserLoginStarted ? (
+            /* browser 开窗后：状态行 + 按钮行（两行布局，子 webview 不遮挡此区域） */
+            <div className="browser-actions-container">
+              {error ? (
+                <div className="probe-status-line" style={{ color: "var(--color-error, #e5484d)" }}>
+                  {error}
+                </div>
+              ) : (
+                <div className="probe-status-line" style={{ color: "var(--color-warning, #f0a030)" }}>
+                  请在上方完成登录后点击"确认登录"
+                </div>
+              )}
+              <div className="modal-actions-row">
+                <button type="button" onClick={handleCloseInternal} disabled={confirming}>
+                  取消登录
+                </button>
+                <button
+                  type="button"
+                  className="primary"
+                  onClick={handleConfirmLogin}
+                  disabled={confirming}
+                >
+                  {confirming ? "确认中..." : "确认登录"}
+                </button>
+              </div>
+            </div>
           ) : (
-            <button
-              type="button"
-              className="primary"
-              onClick={() => handleManualSubmit()}
-              disabled={loading}
-            >
-              {loading ? "添加中..." : "添加账号"}
-            </button>
+            <>
+              <button type="button" onClick={handleCloseInternal} disabled={loading}>
+                取消
+              </button>
+              {mode === "trae-ide" ? (
+                <button
+                  type="button"
+                  className="primary"
+                  onClick={handleReadTraeAccount}
+                  disabled={loading}
+                >
+                  {loading ? "读取中..." : "读取 Trae 账号"}
+                </button>
+              ) : mode === "browser" ? (
+                <button
+                  type="button"
+                  className="primary"
+                  onClick={handleBrowserLogin}
+                  disabled={loading}
+                >
+                  {loading ? "打开中..." : "打开登录界面"}
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  className="primary"
+                  onClick={() => handleManualSubmit()}
+                  disabled={loading}
+                >
+                  {loading ? "添加中..." : "添加账号"}
+                </button>
+              )}
+            </>
           )}
         </div>
       </div>

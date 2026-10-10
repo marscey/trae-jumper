@@ -113,27 +113,38 @@ export function About() {
         <p className="about-version">版本 {__APP_VERSION__}</p>
         {renderUpdateUi()}
         <p className="about-desc">
-          Trae 账号使用量管理工具，帮助您轻松管理多个 Trae 账号的使用情况。
+          基于 Tauri 2 + Rust 的 Trae 系列 IDE 多账号管理工具。在"单活跃 Token 服务端策略"下安全地一键切换客户端账号，内嵌 WebView 无痕登录 + 自动续签让位机制彻底解决互踢问题。
         </p>
       </div>
 
       <div className="about-section">
         <h3>功能特性</h3>
         <ul className="feature-list">
-          <li>📊 多账号使用量统计</li>
-          <li>🔄 实时刷新账号数据</li>
-          <li>📋 一键复制账号信息</li>
-          <li>🎨 简洁美观的界面</li>
+          <li>🎯 <strong>一键切换客户端账号</strong> — 自动杀进程 → 清除旧登录态 → 写入新 Token → 重启客户端，支持跨客户端冲突检测</li>
+          <li>🌐 <strong>内嵌 WebView 登录</strong> — 无痕隔离会话，直接从 WKHTTPCookieStore 捕获完整 HttpOnly cookies 用于后续自动续签</li>
+          <li>🔐 <strong>Token 自动续签 + 多客户端让位</strong> — 后端定时任务自动维护 Token 存活；检测到客户端自管理架构时完全让位，避免单活跃 Token 策略下的互踢</li>
+          <li>📅 <strong>每日自动签到领积分</strong> — 可配置时间点自动执行，签到虚拟设备档案（x-device-id / device-brand）自动生成与自愈</li>
+          <li>📈 <strong>Dashboard 仪表盘</strong> — 积分/配额双模式智能切换，用量饼图、套餐分布、账号进度条预警</li>
+          <li>⚙️ <strong>在线自动更新</strong> — Ed25519 签名校验，应用内检查、下载、安装一键完成</li>
+          <li>🔀 <strong>多应用变体支持</strong> — Trae CN / TraeWork CN / 国际版，API 端点、安装路径、机器码自动跟随切换</li>
+          <li>📋 <strong>数据导入导出</strong> — 一键备份/恢复全部账号数据（含 cookies、Token、签到设备档案）</li>
+          <li>📝 <strong>完整日志系统</strong> — stdout/stderr 落盘 + 5MB 自动轮转 + Watchdog 运行中自动重建</li>
         </ul>
       </div>
 
       <div className="about-section">
         <h3>技术栈</h3>
         <div className="tech-tags">
-          <span className="tech-tag">Tauri</span>
-          <span className="tech-tag">React</span>
+          <span className="tech-tag">Tauri 2</span>
+          <span className="tech-tag">React 19</span>
           <span className="tech-tag">TypeScript</span>
+          <span className="tech-tag">Vite 7</span>
           <span className="tech-tag">Rust</span>
+          <span className="tech-tag">Tokio</span>
+          <span className="tech-tag">Reqwest</span>
+          <span className="tech-tag">Recharts 3</span>
+          <span className="tech-tag">AES-128-CBC</span>
+          <span className="tech-tag">tauri-plugin-updater</span>
         </div>
       </div>
 

@@ -42,10 +42,17 @@ export function Settings({ onToast, onExport, onImport, onClearData, onClientCha
     status_delay_max: 3,
     claim_delay_min: 20,
     claim_delay_max: 60,
+    auto_refresh_enabled: true,
+    auto_refresh_interval: 10,
+    auto_checkin_enabled: false,
+    auto_checkin_time: "22:00",
+    log_watchdog_enabled: true,
+    log_watchdog_interval: 5,
   });
   const [checkinConfigSaving, setCheckinConfigSaving] = useState(false);
   const [switchAsNewDevice, setSwitchAsNewDevice] = useState(false);
   const [switchSettingSaving, setSwitchSettingSaving] = useState(false);
+  const [autoRefreshSaving, setAutoRefreshSaving] = useState(false);
   const [confirmState, setConfirmState] = useState<ConfirmState | null>(null);
 
   // 加载签到配置
@@ -55,6 +62,110 @@ export function Settings({ onToast, onExport, onImport, onClearData, onClientCha
       setCheckinConfig(config);
     } catch (err: any) {
       console.error("加载签到配置失败:", err);
+    }
+  };
+
+  // 切换自动刷新开关（即时保存，与"切换为新设备"风格一致）
+  const handleToggleAutoRefresh = async (enabled: boolean) => {
+    if (autoRefreshSaving) return;
+    const next = { ...checkinConfig, auto_refresh_enabled: enabled };
+    // 先乐观更新 UI，避免开关视觉回弹
+    setCheckinConfig(next);
+    setAutoRefreshSaving(true);
+    try {
+      await api.updateCheckinConfig(next);
+      onToast?.("success", enabled ? "已开启自动刷新" : "已关闭自动刷新");
+    } catch (err: any) {
+      // 失败回滚
+      setCheckinConfig((prev) => ({ ...prev, auto_refresh_enabled: checkinConfig.auto_refresh_enabled }));
+      onToast?.("error", err.message || "保存失败");
+    } finally {
+      setAutoRefreshSaving(false);
+    }
+  };
+
+  // 修改自动刷新间隔（即时保存）
+  const handleChangeRefreshInterval = async (interval: number) => {
+    if (autoRefreshSaving) return;
+    const next = { ...checkinConfig, auto_refresh_interval: interval };
+    setCheckinConfig(next);
+    setAutoRefreshSaving(true);
+    try {
+      await api.updateCheckinConfig(next);
+      onToast?.("success", `刷新间隔已设为 ${interval} 分钟`);
+    } catch (err: any) {
+      setCheckinConfig((prev) => ({ ...prev, auto_refresh_interval: checkinConfig.auto_refresh_interval }));
+      onToast?.("error", err.message || "保存失败");
+    } finally {
+      setAutoRefreshSaving(false);
+    }
+  };
+
+  // 切换日志 watchdog 开关（即时保存）
+  const handleToggleLogWatchdog = async (enabled: boolean) => {
+    if (autoRefreshSaving) return;
+    const next = { ...checkinConfig, log_watchdog_enabled: enabled };
+    setCheckinConfig(next);
+    setAutoRefreshSaving(true);
+    try {
+      await api.updateCheckinConfig(next);
+      onToast?.("success", enabled ? "已开启日志自动重建" : "已关闭日志自动重建");
+    } catch (err: any) {
+      setCheckinConfig((prev) => ({ ...prev, log_watchdog_enabled: checkinConfig.log_watchdog_enabled }));
+      onToast?.("error", err.message || "保存失败");
+    } finally {
+      setAutoRefreshSaving(false);
+    }
+  };
+
+  // 修改日志 watchdog 检查间隔（即时保存）
+  const handleChangeLogWatchdogInterval = async (interval: number) => {
+    if (autoRefreshSaving) return;
+    const next = { ...checkinConfig, log_watchdog_interval: interval };
+    setCheckinConfig(next);
+    setAutoRefreshSaving(true);
+    try {
+      await api.updateCheckinConfig(next);
+      onToast?.("success", `日志检查间隔已设为 ${interval} 秒`);
+    } catch (err: any) {
+      setCheckinConfig((prev) => ({ ...prev, log_watchdog_interval: checkinConfig.log_watchdog_interval }));
+      onToast?.("error", err.message || "保存失败");
+    } finally {
+      setAutoRefreshSaving(false);
+    }
+  };
+
+  // 切换自动签到开关（即时保存）
+  const handleToggleAutoCheckin = async (enabled: boolean) => {
+    if (autoRefreshSaving) return;
+    const next = { ...checkinConfig, auto_checkin_enabled: enabled };
+    setCheckinConfig(next);
+    setAutoRefreshSaving(true);
+    try {
+      await api.updateCheckinConfig(next);
+      onToast?.("success", enabled ? "已开启自动签到" : "已关闭自动签到");
+    } catch (err: any) {
+      setCheckinConfig((prev) => ({ ...prev, auto_checkin_enabled: checkinConfig.auto_checkin_enabled }));
+      onToast?.("error", err.message || "保存失败");
+    } finally {
+      setAutoRefreshSaving(false);
+    }
+  };
+
+  // 修改自动签到触发时间（即时保存）
+  const handleChangeAutoCheckinTime = async (time: string) => {
+    if (autoRefreshSaving) return;
+    const next = { ...checkinConfig, auto_checkin_time: time };
+    setCheckinConfig(next);
+    setAutoRefreshSaving(true);
+    try {
+      await api.updateCheckinConfig(next);
+      onToast?.("success", `自动签到时间已设为 ${time}`);
+    } catch (err: any) {
+      setCheckinConfig((prev) => ({ ...prev, auto_checkin_time: checkinConfig.auto_checkin_time }));
+      onToast?.("error", err.message || "保存失败");
+    } finally {
+      setAutoRefreshSaving(false);
     }
   };
 
@@ -573,10 +684,22 @@ export function Settings({ onToast, onExport, onImport, onClearData, onClientCha
         <div className="setting-item">
           <div className="setting-info">
             <div className="setting-label">自动刷新</div>
-            <div className="setting-desc">定时自动刷新账号使用量数据</div>
+            <div className="setting-desc">
+              定时自动刷新账号使用量数据
+              {checkinConfig.auto_refresh_enabled && (
+                <span style={{ display: "inline-block", marginLeft: "6px", color: "var(--accent-color)" }}>
+                  · 每 {checkinConfig.auto_refresh_interval} 分钟执行
+                </span>
+              )}
+            </div>
           </div>
           <label className="toggle">
-            <input type="checkbox" />
+            <input
+              type="checkbox"
+              checked={checkinConfig.auto_refresh_enabled}
+              disabled={autoRefreshSaving}
+              onChange={(e) => handleToggleAutoRefresh(e.target.checked)}
+            />
             <span className="toggle-slider"></span>
           </label>
         </div>
@@ -586,11 +709,57 @@ export function Settings({ onToast, onExport, onImport, onClearData, onClientCha
             <div className="setting-label">刷新间隔</div>
             <div className="setting-desc">自动刷新的时间间隔（分钟）</div>
           </div>
-          <select className="setting-select">
+          <select
+            className="setting-select"
+            value={String(checkinConfig.auto_refresh_interval)}
+            disabled={autoRefreshSaving || !checkinConfig.auto_refresh_enabled}
+            onChange={(e) => handleChangeRefreshInterval(Number(e.target.value))}
+          >
             <option value="5">5 分钟</option>
             <option value="10">10 分钟</option>
             <option value="30">30 分钟</option>
             <option value="60">60 分钟</option>
+          </select>
+        </div>
+
+        <div className="setting-item">
+          <div className="setting-info">
+            <div className="setting-label">日志自动重建</div>
+            <div className="setting-desc">
+              日志文件被外部删除/替换时自动重建并继续写入
+              {checkinConfig.log_watchdog_enabled && (
+                <span style={{ display: "inline-block", marginLeft: "6px", color: "var(--accent-color)" }}>
+                  · 每 {checkinConfig.log_watchdog_interval} 秒检查
+                </span>
+              )}
+            </div>
+          </div>
+          <label className="toggle">
+            <input
+              type="checkbox"
+              checked={checkinConfig.log_watchdog_enabled}
+              disabled={autoRefreshSaving}
+              onChange={(e) => handleToggleLogWatchdog(e.target.checked)}
+            />
+            <span className="toggle-slider"></span>
+          </label>
+        </div>
+
+        <div className="setting-item">
+          <div className="setting-info">
+            <div className="setting-label">日志检查间隔</div>
+            <div className="setting-desc">日志自动重建的检查间隔（秒，最小 2 秒）</div>
+          </div>
+          <select
+            className="setting-select"
+            value={String(checkinConfig.log_watchdog_interval)}
+            disabled={autoRefreshSaving || !checkinConfig.log_watchdog_enabled}
+            onChange={(e) => handleChangeLogWatchdogInterval(Number(e.target.value))}
+          >
+            <option value="5">5 秒</option>
+            <option value="10">10 秒</option>
+            <option value="30">30 秒</option>
+            <option value="60">60 秒</option>
           </select>
         </div>
       </div>
@@ -628,7 +797,7 @@ export function Settings({ onToast, onExport, onImport, onClearData, onClientCha
         <div className="setting-item">
           <div className="setting-info">
             <div className="setting-label">批量签到延迟范围</div>
-            <div className="setting-desc">每个账号签到之间的等待时间，模拟人类操作节奏</div>
+            <div className="setting-desc">连续签到多个账号时的等待时间，已签到账号跳过、不计入延迟</div>
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
             <input
@@ -654,31 +823,99 @@ export function Settings({ onToast, onExport, onImport, onClearData, onClientCha
           </div>
         </div>
 
+        {/* 自动签到 */}
+        <div className="setting-item">
+          <div className="setting-info">
+            <div className="setting-label">自动签到</div>
+            <div className="setting-desc">
+              每日到达设定时间后，自动为今日尚未签到的账号签到
+              {checkinConfig.auto_checkin_enabled && (
+                <span style={{ display: "inline-block", marginLeft: "6px", color: "var(--accent-color)" }}>
+                  · 每天 {checkinConfig.auto_checkin_time} 后执行
+                </span>
+              )}
+            </div>
+          </div>
+          <label className="toggle">
+            <input
+              type="checkbox"
+              checked={checkinConfig.auto_checkin_enabled}
+              disabled={autoRefreshSaving}
+              onChange={(e) => handleToggleAutoCheckin(e.target.checked)}
+            />
+            <span className="toggle-slider"></span>
+          </label>
+        </div>
+
+        <div className="setting-item">
+          <div className="setting-info">
+            <div className="setting-label">签到开始时间</div>
+            <div className="setting-desc">晚于该时间点触发自动签到，确保在零点前完成（含 2 分钟缓冲）</div>
+          </div>
+          <input
+            type="time"
+            className="setting-input"
+            style={{ width: "120px" }}
+            value={checkinConfig.auto_checkin_time}
+            disabled={autoRefreshSaving || !checkinConfig.auto_checkin_enabled}
+            onChange={(e) => handleChangeAutoCheckinTime(e.target.value)}
+          />
+        </div>
+
         {/* 设备型号池 */}
         <div className="setting-item" style={{ flexDirection: "column", alignItems: "flex-start" }}>
           <div className="setting-info" style={{ marginBottom: "8px" }}>
             <div className="setting-label">设备型号池</div>
             <div className="setting-desc">预设的虚拟设备型号，每个账号添加时随机分配</div>
           </div>
-          <div className="device-model-pool" style={{ display: "flex", flexWrap: "wrap", gap: "6px" }}>
-            {[
-              "MacBookAir10,1", "MacBookAir10,2",
-              "MacBookPro18,3", "MacBookPro18,4",
-              "MacBookPro16,1", "Mac14,2",
-              "Mac14,3", "MacBookPro14,3",
-            ].map((model) => (
-              <span key={model} className="device-model-tag" style={{
-                padding: "4px 10px",
-                background: "var(--bg-secondary)",
-                borderRadius: "6px",
-                fontSize: "12px",
-                fontFamily: "monospace",
-                color: "var(--text-secondary)",
-                border: "1px solid var(--border-color)",
-              }}>
-                {model}
-              </span>
-            ))}
+          <div style={{ width: "100%", display: "flex", flexDirection: "column", gap: "14px" }}>
+            {/* macOS 型号 */}
+            <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+              <div style={{ fontSize: "12px", color: "var(--text-secondary)", fontWeight: 500 }}>macOS</div>
+              <div className="device-model-pool" style={{ display: "flex", flexWrap: "wrap", gap: "6px" }}>
+                {[
+                  "MacBookAir10,1", "MacBookAir10,2",
+                  "MacBookPro18,3", "MacBookPro18,4",
+                  "MacBookPro16,1", "Mac14,2",
+                  "Mac14,3", "MacBookPro14,3",
+                ].map((model) => (
+                  <span key={model} className="device-model-tag" style={{
+                    padding: "4px 10px",
+                    background: "var(--bg-secondary)",
+                    borderRadius: "6px",
+                    fontSize: "12px",
+                    fontFamily: "monospace",
+                    color: "var(--text-secondary)",
+                    border: "1px solid var(--border-color)",
+                  }}>
+                    {model}
+                  </span>
+                ))}
+              </div>
+            </div>
+            {/* Windows 型号 */}
+            <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+              <div style={{ fontSize: "12px", color: "var(--text-secondary)", fontWeight: 500 }}>Windows（主板型号）</div>
+              <div className="device-model-pool" style={{ display: "flex", flexWrap: "wrap", gap: "6px" }}>
+                {[
+                  "Z390 GAMING X", "B760M-A GAMING WIFI",
+                  "B660M MORTAR WIFI", "H610M PLUS",
+                  "X570 AORUS ELITE",
+                ].map((model) => (
+                  <span key={model} className="device-model-tag" style={{
+                    padding: "4px 10px",
+                    background: "var(--bg-secondary)",
+                    borderRadius: "6px",
+                    fontSize: "12px",
+                    fontFamily: "monospace",
+                    color: "var(--text-secondary)",
+                    border: "1px solid var(--border-color)",
+                  }}>
+                    {model}
+                  </span>
+                ))}
+              </div>
+            </div>
           </div>
         </div>
 

@@ -5,9 +5,9 @@ interface ContextMenuProps {
   y: number;
   onClose: () => void;
   onViewDetail: () => void;
+  onViewUsage: () => void;
   onRefresh: () => void;
   onUpdateToken: () => void;
-  onCopyToken: () => void;
   onSwitchAccount: () => void;
   onClaimGift: () => void;
   onCheckin: () => void;
@@ -22,9 +22,9 @@ export function ContextMenu({
   y,
   onClose,
   onViewDetail,
+  onViewUsage,
   onRefresh,
   onUpdateToken,
-  onCopyToken,
   onSwitchAccount,
   onClaimGift,
   onCheckin,
@@ -36,17 +36,29 @@ export function ContextMenu({
   const menuRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    // 调整菜单位置，防止超出屏幕
+    // 边界钳制：确保菜单完整显示在视口内（小窗口/边缘点击时）
     if (menuRef.current) {
       const menu = menuRef.current;
       const rect = menu.getBoundingClientRect();
+      const margin = 8;
 
-      if (rect.right > window.innerWidth) {
-        menu.style.left = `${x - rect.width}px`;
+      let left = x;
+      let top = y;
+
+      // 右侧溢出 → 向左收
+      if (left + rect.width > window.innerWidth - margin) {
+        left = window.innerWidth - rect.width - margin;
       }
-      if (rect.bottom > window.innerHeight) {
-        menu.style.top = `${y - rect.height}px`;
+      // 底部溢出 → 向上收
+      if (top + rect.height > window.innerHeight - margin) {
+        top = window.innerHeight - rect.height - margin;
       }
+      // 钳制最小坐标，避免被顶出视口外
+      if (left < margin) left = margin;
+      if (top < margin) top = margin;
+
+      menu.style.left = `${left}px`;
+      menu.style.top = `${top}px`;
     }
   }, [x, y]);
 
@@ -62,6 +74,10 @@ export function ContextMenu({
           <span className="icon">👁</span>
           查看详情
         </div>
+        <div className="context-menu-item" onClick={onViewUsage}>
+          <span className="icon">📊</span>
+          账号用量
+        </div>
         <div className="context-menu-item" onClick={onRefresh}>
           <span className="icon">🔄</span>
           刷新数据
@@ -69,10 +85,6 @@ export function ContextMenu({
         <div className="context-menu-item" onClick={onUpdateToken}>
           <span className="icon">🔐</span>
           更新 Token
-        </div>
-        <div className="context-menu-item" onClick={onCopyToken}>
-          <span className="icon">🔑</span>
-          复制 Token
         </div>
         <div
           className={`context-menu-item ${isCurrent ? "disabled" : ""}`}
