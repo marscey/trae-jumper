@@ -1,4 +1,5 @@
 use anyhow::{anyhow, Result};
+use sha2::{Digest, Sha256};
 use uuid::Uuid;
 use std::fs;
 use std::path::PathBuf;
@@ -74,44 +75,6 @@ fn get_trae_data_path() -> Result<PathBuf> {
     Err(anyhow!("此功能仅支持 Windows 和 macOS 系统"))
 }
 
-/// 读取当前目标 Trae 客户端已登录账号的 userId（只读，不新增/修改账号）。
-///
-/// 从数据目录 `User/globalStorage/storage.json` 中取 `iCubeAuthInfo://icube.cloudide`，
-/// 经 crypto 解密后解析出 `userId`。客户端未登录/文件不存在时返回 `Ok(None)`。
-pub fn read_trae_login_user_id() -> Result<Option<String>> {
-    #[cfg(any(target_os = "windows", target_os = "macos"))]
-    let trae_path = get_trae_data_path()?;
-
-    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
-    let trae_path: PathBuf = {
-        return Err(anyhow!("此功能仅支持 Windows 和 macOS 系统"));
-    };
-
-    let storage_path = trae_path.join("User").join("globalStorage").join("storage.json");
-    if !storage_path.exists() {
-        return Ok(None);
-    }
-
-    let content = fs::read_to_string(&storage_path)
-        .map_err(|e| anyhow!("读取 storage.json 失败: {}", e))?;
-    let storage: serde_json::Value = serde_json::from_str(&content)
-        .map_err(|e| anyhow!("解析 storage.json 失败: {}", e))?;
-
-    let auth_info_raw = match storage
-        .get("iCubeAuthInfo://icube.cloudide")
-        .and_then(|v| v.as_str())
-    {
-        Some(s) => s,
-        None => return Ok(None), // 客户端未登录，无登录信息键
-    };
-
-    let auth_info_str = crate::crypto::read_storage_value(auth_info_raw);
-    let auth_info: serde_json::Value = serde_json::from_str(&auth_info_str)
-        .map_err(|e| anyhow!("解析认证信息失败: {}", e))?;
-
-    Ok(auth_info.get("userId").and_then(|v| v.as_str()).map(String::from))
-}
-
 /// 读取 Trae IDE 的机器码
 pub fn get_trae_machine_id() -> Result<String> {
     let trae_path = get_trae_data_path()?;
@@ -174,75 +137,109 @@ pub fn set_trae_machine_id(new_id: &str) -> Result<()> {
     Ok(())
 }
 
-/// 检查 Trae IDE 是否正在运行
+/// 检查 Trae IDE 是否正在运行（Windows，遍历当前变体的所有 exe 名候选）
 #[cfg(target_os = "windows")]
 pub fn is_trae_running() -> bool {
-    let output = Command::new("tasklist")
-        .args(["/FI", "IMAGENAME eq Trae.exe", "/NH"])
-        .output();
+    let variant = crate::trae_app::current();
+    for exe_name in variant.windows_exe_names {
+        let output = Command::new("tasklist")
+            .args(["/FI", &format!("IMAGENAME eq {}", exe_name), "/NH"])
+            .output();
 
-    match output {
-        Ok(out) => {
-            let result = String::from_utf8_lossy(&out.stdout);
-            result.contains("Trae.exe")
+        match output {
+            Ok(out) => {
+                let result = String::from_utf8_lossy(&out.stdout);
+                if result.contains(exe_name) {
+                    return true;
+                }
+            }
+            Err(_) => continue,
         }
-        Err(_) => false,
     }
+    false
+}
+
+/// 通过 `ps` 查找命令行包含指定 pattern 的进程 PID 列表（macOS）。
+///
+/// 不使用 `pgrep -f`：Electron 类应用启动时会继承大量环境变量，导致进程参数列表
+/// 超出 pgrep 的读取上限，`pgrep -f <path>` 会漏判主进程（返回未运行），
+/// 进而导致切换账号时 kill_trae 提前返回、客户端未关闭重启、状态与实际脱节。
+/// `ps -axo pid=,command=` 无此限制，能可靠拿到主进程路径。
+#[cfg(target_os = "macos")]
+fn find_pids_by_pattern(pattern: &str) -> Vec<i32> {
+    let output = match Command::new("ps").args(["-axo", "pid=,command="]).output() {
+        Ok(o) => o,
+        Err(_) => return vec![],
+    };
+    let text = String::from_utf8_lossy(&output.stdout);
+    let mut pids = Vec::new();
+    for line in text.lines() {
+        if line.contains(pattern) {
+            if let Some(pid_str) = line.trim().split_whitespace().next() {
+                if let Ok(pid) = pid_str.parse::<i32>() {
+                    pids.push(pid);
+                }
+            }
+        }
+    }
+    pids
 }
 
 #[cfg(target_os = "macos")]
 pub fn is_trae_running() -> bool {
-    // 使用 pgrep -f 按当前目标应用的完整路径匹配（任一候选模式命中即视为运行中）
+    // 用 ps 匹配当前目标应用的进程路径（任一候选模式命中即视为运行中）
     for pattern in crate::trae_app::current().process_patterns {
-        let running = Command::new("pgrep")
-            .args(["-f", pattern])
-            .output()
-            .map(|out| out.status.success())
-            .unwrap_or(false);
-        if running {
+        if !find_pids_by_pattern(pattern).is_empty() {
             return true;
         }
     }
     false
 }
 
-/// 关闭 Trae IDE 进程
+/// 关闭 Trae IDE 进程（Windows，遍历当前变体的所有 exe 名候选）
 #[cfg(target_os = "windows")]
 pub fn kill_trae() -> Result<()> {
+    let variant = crate::trae_app::current();
     if !is_trae_running() {
         println!("[INFO] Trae IDE 未运行");
         return Ok(());
     }
 
-    println!("[INFO] 正在关闭 Trae IDE...");
+    println!("[INFO] 正在关闭 Trae IDE ({})...", variant.display_name);
 
-    // 先尝试优雅关闭
-    let _ = Command::new("taskkill")
-        .args(["/IM", "Trae.exe"])
-        .output();
+    let mut any_killed = false;
+
+    // 先尝试优雅关闭所有候选 exe
+    for exe_name in variant.windows_exe_names {
+        let _ = Command::new("taskkill")
+            .args(["/IM", exe_name])
+            .output();
+        any_killed = true;
+    }
 
     // 等待一小段时间
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    std::thread::sleep(std::time::Duration::from_millis(800));
 
     // 如果还在运行，强制关闭
     if is_trae_running() {
-        let output = Command::new("taskkill")
-            .args(["/F", "/IM", "Trae.exe"])
-            .output()
-            .map_err(|e| anyhow!("关闭 Trae IDE 失败: {}", e))?;
-
-        if !output.status.success() {
-            let err = String::from_utf8_lossy(&output.stderr);
-            if !err.is_empty() {
-                return Err(anyhow!("关闭 Trae IDE 失败: {}", err));
-            }
+        println!("[INFO] 优雅关闭失败，正在强制关闭...");
+        for exe_name in variant.windows_exe_names {
+            let _ = Command::new("taskkill")
+                .args(["/F", "/IM", exe_name, "/T"])
+                .output();
         }
+
+        // 再等待一下
+        std::thread::sleep(std::time::Duration::from_millis(1200));
     }
 
-    // 等待进程完全退出
-    std::thread::sleep(std::time::Duration::from_millis(1000));
+    if is_trae_running() {
+        return Err(anyhow!("无法关闭 Trae IDE，请手动关闭后重试"));
+    }
 
-    println!("[INFO] Trae IDE 已关闭");
+    if any_killed {
+        println!("[INFO] Trae IDE 已关闭");
+    }
     Ok(())
 }
 
@@ -267,13 +264,13 @@ pub fn kill_trae() -> Result<()> {
     // 等待一小段时间
     std::thread::sleep(std::time::Duration::from_millis(1500));
 
-    // 如果还在运行，使用 pkill 强制关闭（逐个尝试变体路径模式）
+    // 如果还在运行，强制关闭（逐个尝试变体路径模式，用 ps 取 PID 后 kill -9）
     if is_trae_running() {
         println!("[INFO] 优雅关闭失败，正在强制关闭...");
         for pattern in variant.process_patterns {
-            let _ = Command::new("pkill")
-                .args(["-9", "-f", pattern])
-                .output();
+            for pid in find_pids_by_pattern(pattern) {
+                let _ = Command::new("kill").args(["-9", &pid.to_string()]).output();
+            }
         }
 
         // 再等待一下
@@ -288,6 +285,201 @@ pub fn kill_trae() -> Result<()> {
     Ok(())
 }
 
+/// 检查指定 Trae 客户端变体是否正在运行（macOS）
+#[cfg(target_os = "macos")]
+pub fn is_trae_running_for_variant(variant: &crate::trae_app::TraeAppVariant) -> bool {
+    for pattern in variant.process_patterns {
+        if !find_pids_by_pattern(pattern).is_empty() {
+            return true;
+        }
+    }
+    false
+}
+
+/// 关闭指定 Trae 客户端变体（macOS）
+#[cfg(target_os = "macos")]
+pub fn kill_trae_for_variant(variant: &crate::trae_app::TraeAppVariant) -> Result<()> {
+    if !is_trae_running_for_variant(variant) {
+        return Ok(());
+    }
+    println!("[INFO] 正在关闭 {}...", variant.display_name);
+    for name in variant.osascript_names {
+        let quit_script = format!("tell application \"{}\" to quit", name);
+        let _ = Command::new("osascript")
+            .args(["-e", &quit_script])
+            .output();
+    }
+    std::thread::sleep(std::time::Duration::from_millis(1500));
+    if is_trae_running_for_variant(variant) {
+        for pattern in variant.process_patterns {
+            for pid in find_pids_by_pattern(pattern) {
+                let _ = Command::new("kill").args(["-9", &pid.to_string()]).output();
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_millis(1000));
+    }
+    if is_trae_running_for_variant(variant) {
+        return Err(anyhow!("无法关闭 {}", variant.display_name));
+    }
+    println!("[INFO] {} 已关闭", variant.display_name);
+    Ok(())
+}
+
+/// 启动指定 Trae 客户端变体（macOS，优先用 bundle path，兜底 open -a）
+#[cfg(target_os = "macos")]
+pub fn launch_trae_for_variant(variant: &crate::trae_app::TraeAppVariant) -> Result<()> {
+    // 优先用 bundle path 直接打开（应用名可能与 .app 文件名不一致）
+    for bundle in variant.bundle_paths {
+        let path = if bundle.starts_with("~/") {
+            let home = std::env::var("HOME").unwrap_or_default();
+            bundle.replacen("~", &home, 1)
+        } else {
+            bundle.to_string()
+        };
+        if std::path::Path::new(&path).exists() {
+            let status = Command::new("open")
+                .arg(&path)
+                .status()
+                .map_err(|e| anyhow!("启动 {} 失败: {}", variant.display_name, e))?;
+            if status.success() {
+                println!("[INFO] 已启动 {} ({})", variant.display_name, path);
+                return Ok(());
+            }
+        }
+    }
+    // 兜底：用应用名
+    for name in variant.osascript_names {
+        let status = Command::new("open")
+            .args(["-a", name])
+            .status()
+            .map_err(|e| anyhow!("启动 {} 失败: {}", variant.display_name, e))?;
+        if status.success() {
+            println!("[INFO] 已启动 {}", variant.display_name);
+            return Ok(());
+        }
+    }
+    Err(anyhow!("无法启动 {}", variant.display_name))
+}
+
+// === Windows：变体级进程检测/关闭/启动 ===
+
+/// 检查指定 Trae 客户端变体是否正在运行（Windows）
+#[cfg(target_os = "windows")]
+pub fn is_trae_running_for_variant(variant: &crate::trae_app::TraeAppVariant) -> bool {
+    for exe_name in variant.windows_exe_names {
+        let output = Command::new("tasklist")
+            .args(["/FI", &format!("IMAGENAME eq {}", exe_name), "/NH"])
+            .output();
+        match output {
+            Ok(out) => {
+                let result = String::from_utf8_lossy(&out.stdout);
+                if result.contains(exe_name) {
+                    return true;
+                }
+            }
+            Err(_) => continue,
+        }
+    }
+    false
+}
+
+/// 关闭指定 Trae 客户端变体（Windows）
+#[cfg(target_os = "windows")]
+pub fn kill_trae_for_variant(variant: &crate::trae_app::TraeAppVariant) -> Result<()> {
+    if !is_trae_running_for_variant(variant) {
+        return Ok(());
+    }
+    println!("[INFO] 正在关闭 {}...", variant.display_name);
+    for exe_name in variant.windows_exe_names {
+        let _ = Command::new("taskkill")
+            .args(["/F", "/IM", exe_name, "/T"])
+            .output();
+    }
+    std::thread::sleep(std::time::Duration::from_millis(1200));
+    if is_trae_running_for_variant(variant) {
+        return Err(anyhow!("无法关闭 {}", variant.display_name));
+    }
+    println!("[INFO] {} 已关闭", variant.display_name);
+    Ok(())
+}
+
+/// 启动指定 Trae 客户端变体（Windows，自动扫描安装路径后 spawn）
+#[cfg(target_os = "windows")]
+pub fn launch_trae_for_variant(variant: &crate::trae_app::TraeAppVariant) -> Result<()> {
+    let exe_path = scan_variant_exe_path(variant)
+        .ok_or_else(|| anyhow!("未找到 {} 的安装路径", variant.display_name))?;
+    println!("[INFO] 正在启动 {} ({})...", variant.display_name, exe_path.display());
+    Command::new(&exe_path)
+        .spawn()
+        .map_err(|e| anyhow!("启动 {} 失败: {}", variant.display_name, e))?;
+    Ok(())
+}
+
+/// Windows 下扫描指定变体的 exe 路径
+/// 优先级：注册表 DisplayIcon → 所有盘符 Program Files 精确匹配 → LOCALAPPDATA → USERPROFILE
+#[cfg(target_os = "windows")]
+fn scan_variant_exe_path(variant: &crate::trae_app::TraeAppVariant) -> Option<PathBuf> {
+    // —— 阶段 1：注册表 Uninstall DisplayIcon（最可靠，直接就是 exe 路径）——
+    // 注册表 DisplayName 如 "TRAE CN (User)" / "TraeWork CN (User)"，DisplayIcon 就是绝对路径
+    if let Some(p) = scan_via_registry(variant) {
+        if p.exists() {
+            return Some(p);
+        }
+    }
+
+    // —— 阶段 2：遍历所有盘符的 Program Files 目录（用户可能装在非系统盘）——
+    let mut roots: Vec<PathBuf> = Vec::new();
+
+    // 2a) 枚举所有逻辑盘的根目录，查找 Program Files 类目录
+    for drive in "ABCDEFGHIJKLMNOPQRSTUVWXYZ".chars() {
+        let root = PathBuf::from(format!("{}:\\", drive));
+        if !root.exists() {
+            continue;
+        }
+        // Program Files (无后缀) 和 Program Files (x86)
+        for pf_name in &["Program Files", "Program Files (x86)", "Program Files (X86)"] {
+            let pf = root.join(pf_name);
+            if pf.exists() {
+                roots.push(pf);
+            }
+        }
+    }
+
+    // 2b) 环境变量兜底（通常只有 C 盘）
+    for env_var in &["PROGRAMFILES", "PROGRAMFILES(X86)"] {
+        if let Ok(p) = std::env::var(env_var) {
+            let pb = PathBuf::from(&p);
+            if pb.exists() && !roots.contains(&pb) {
+                roots.push(pb);
+            }
+        }
+    }
+
+    // 2c) %LOCALAPPDATA%\Programs（NSIS 默认安装位置）
+    if let Ok(local_appdata) = std::env::var("LOCALAPPDATA") {
+        roots.push(PathBuf::from(&local_appdata).join("Programs"));
+    }
+
+    // 2d) %USERPROFILE%\AppData\Local（MSIX / 自定义安装位置）
+    if let Ok(userprofile) = std::env::var("USERPROFILE") {
+        roots.push(PathBuf::from(&userprofile).join("AppData").join("Local"));
+    }
+
+    // —— 阶段 3：精确组合匹配 ——
+    for root in &roots {
+        for dir_name in variant.windows_install_dirs {
+            for exe_name in variant.windows_exe_names {
+                let p = root.join(dir_name).join(exe_name);
+                if p.exists() {
+                    return Some(p);
+                }
+            }
+        }
+    }
+
+    None
+}
+
 #[cfg(not(any(target_os = "windows", target_os = "macos")))]
 pub fn is_trae_running() -> bool {
     false
@@ -298,13 +490,15 @@ pub fn kill_trae() -> Result<()> {
     Err(anyhow!("此功能仅支持 Windows 和 macOS 系统"))
 }
 
-/// 获取 Trae IDE 配置文件路径
+/// 获取 Trae IDE 配置文件路径（按当前客户端变体隔离存储）
+/// 文件名示例：trae_path.trae-cn.txt / trae_path.trae-work.txt / trae_path.trae.txt
 fn get_trae_config_path() -> Result<PathBuf> {
     let proj_dirs = directories::ProjectDirs::from("com", "marscey", "traejumper")
         .ok_or_else(|| anyhow!("无法获取应用数据目录"))?;
     let config_dir = proj_dirs.config_dir();
     fs::create_dir_all(config_dir)?;
-    Ok(config_dir.join("trae_path.txt"))
+    let variant_key = crate::trae_app::current().key;
+    Ok(config_dir.join(format!("trae_path.{}.txt", variant_key)))
 }
 
 /// 获取保存的 Trae IDE 路径
@@ -365,10 +559,94 @@ pub fn clear_saved_trae_path() -> Result<()> {
     Ok(())
 }
 
-/// 自动扫描 Trae IDE 安装路径
+/// 自动扫描 Trae IDE 安装路径（Windows，遍历常见安装位置 + 注册表兜底）
 #[cfg(target_os = "windows")]
 pub fn scan_trae_path() -> Result<String> {
-    Err(anyhow!("请手动设置 Trae IDE 路径"))
+    let variant = crate::trae_app::current();
+    match scan_variant_exe_path(variant) {
+        Some(path) => {
+            Ok(path.to_string_lossy().to_string())
+        }
+        None => {
+            Err(anyhow!(
+                "未找到 {} 的安装路径，请手动设置路径（通常在 C:\\Users\\<你>\\AppData\\Local\\Programs\\TRAE CN\\）",
+                variant.display_name
+            ))
+        }
+    }
+}
+
+/// 注册表兜底查找 Trae 安装路径（HKLM + HKCU Uninstall 条目）
+#[cfg(target_os = "windows")]
+fn scan_via_registry(variant: &crate::trae_app::TraeAppVariant) -> Option<PathBuf> {
+    use winreg::enums::*;
+    use winreg::RegKey;
+
+    // HKEY_* 常量是 isize 类型
+    let uninstall_paths: &[(&str, isize)] = &[
+        (r"Software\Microsoft\Windows\CurrentVersion\Uninstall", HKEY_CURRENT_USER),
+        (r"Software\Microsoft\Windows\CurrentVersion\Uninstall", HKEY_LOCAL_MACHINE),
+        (r"Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall", HKEY_LOCAL_MACHINE),
+    ];
+
+    for (sub_path, hive) in uninstall_paths {
+        let hive_label = if *hive == HKEY_LOCAL_MACHINE { "HKLM" } else { "HKCU" };
+        let root = RegKey::predef(*hive);
+        let Ok(uninstall) = root.open_subkey(sub_path) else {
+            continue;
+        };
+
+        // enum_keys() 直接返回迭代器（不是 Result），里面每个枚举是 io::Result
+        for subkey_name in uninstall.enum_keys().flatten() {
+            let Ok(subkey) = uninstall.open_subkey(&subkey_name) else {
+                continue;
+            };
+
+            // 检查 DisplayName 是否匹配变体名
+            let display_name: String = subkey
+                .get_value("DisplayName")
+                .unwrap_or_default();
+
+            if display_name.is_empty() {
+                continue;
+            }
+
+            // 注册表名称匹配（双重过滤防串）：
+            // 1. DisplayName 必须包含某个候选 dir 名
+            // 2. 额外要求：DisplayName 带 "(User)" 后缀（Trae 客户端安装程序的统一标记）
+            //    或 DisplayName 包含完整的 display_name（国际版 "Trae (User)" 等）
+            let has_user_suffix = display_name.contains("(User)");
+            let dir_match = variant.windows_install_dirs.iter().any(|d| {
+                display_name.contains(d)
+            });
+            let display_match = display_name.contains(variant.display_name);
+            let name_matches = (dir_match || display_match) && (has_user_suffix || dir_match);
+
+            println!(
+                "[DEBUG registry]   entry: DisplayName='{}', dir_match={}, display_match={}, has_user_suffix={}, FINAL matches={}",
+                display_name, dir_match, display_match, has_user_suffix, name_matches
+            );
+
+            if name_matches {
+                // 尝试读取 InstallLocation 或 DisplayIcon
+                if let Ok(icon_path) = subkey.get_value::<String, _>("DisplayIcon") {
+                    let p = PathBuf::from(icon_path.trim_end_matches('"'));
+                    if p.exists() {
+                        return Some(p);
+                    }
+                }
+                if let Ok(install_loc) = subkey.get_value::<String, _>("InstallLocation") {
+                    for exe_name in variant.windows_exe_names {
+                        let exe_path = PathBuf::from(&install_loc).join(exe_name);
+                        if exe_path.exists() {
+                            return Some(exe_path);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    None
 }
 
 #[cfg(target_os = "macos")]
@@ -468,7 +746,13 @@ pub struct TraeLoginInfo {
 
 /// 将账号登录信息写入 Trae IDE
 pub fn write_trae_login_info(info: &TraeLoginInfo) -> Result<()> {
-    let trae_path = get_trae_data_path()?;
+    write_trae_login_info_for_variant(info, None)
+}
+
+/// 将账号登录信息写入指定 Trae 客户端变体（variant=None 时使用当前目标客户端）
+pub fn write_trae_login_info_for_variant(info: &TraeLoginInfo, variant: Option<&crate::trae_app::TraeAppVariant>) -> Result<()> {
+    let variant = variant.unwrap_or_else(|| crate::trae_app::current());
+    let trae_path = crate::trae_app::data_dir_of(variant);
 
     // 确保目录存在
     let storage_dir = trae_path.join("User").join("globalStorage");
@@ -495,7 +779,6 @@ pub fn write_trae_login_info(info: &TraeLoginInfo) -> Result<()> {
     let refresh_expired_at = now + chrono::Duration::days(180);
 
     // 当前目标应用变体（决定 host 与区域格式）
-    let variant = crate::trae_app::current();
     let region = if variant.is_cn {
         "CN".to_string()
     } else {

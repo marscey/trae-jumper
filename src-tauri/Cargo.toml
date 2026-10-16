@@ -1,6 +1,6 @@
 [package]
 name = "trae-jumper"
-version = "0.9.10"
+version = "1.0.0"
 description = "TraeJumper - 轻松管理 Trae 账号的小工具"
 authors = ["marscey"]
 edition = "2021"
@@ -13,7 +13,7 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = ["tray-icon", "image-png"] }
+tauri = { version = "2", features = ["tray-icon", "image-png", "unstable"] }
 tauri-plugin-opener = "2"
 tauri-plugin-deep-link = "2"
 serde = { version = "1", features = ["derive"] }
@@ -32,13 +32,21 @@ uuid = { version = "1", features = ["v4", "v5"] }
 tauri-plugin-dialog = "2"
 tauri-plugin-updater = "2"
 tauri-plugin-process = "2"
+tauri-plugin-single-instance = "2"
 sha2 = "0.10"
 aes = "0.8"
 cbc = { version = "0.1", features = ["alloc"] }
 rand = "0.8"
+# OAuth Native 登录：EC P-256 密钥对 + ECDSA-SHA256 签名
+p256 = { version = "0.13", features = ["ecdsa", "pkcs8", "pem"] }
+ecdsa = { version = "0.16", features = ["pem"] }
+hex = "0.4"
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.52"
+libc = "0.2"
+windows-sys = { version = "0.59", features = ["Win32_System_Console"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 core-foundation = "0.10"
+libc = "0.2"

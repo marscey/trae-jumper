@@ -273,8 +273,14 @@ pub struct UsageSession {
     pub model_name: String,
     pub amount_float: f64,
     pub cost_money_float: f64,
+    #[serde(default)]
+    pub credits_float: f64,
     pub use_max_mode: bool,
     pub product_type_list: Vec<i32>,
+    #[serde(default)]
+    pub usage_source: i32,
+    #[serde(default)]
+    pub user_input_preview: String,
     pub extra_info: UsageExtraInfo,
 }
 

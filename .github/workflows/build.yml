@@ -130,6 +130,7 @@ jobs:
             --out latest.json \
             darwin-aarch64=TraeJumper-${{ inputs.version }}-mac-arm64.app.tar.gz "$(find artifacts -path '*macos-arm64*' -name '*.sig' | head -n 1)" \
             darwin-x86_64=TraeJumper-${{ inputs.version }}-mac-x64.app.tar.gz "$(find artifacts -path '*macos-x64*' -name '*.sig' | head -n 1)" \
+            windows-x86_64-nsis=TraeJumper-${{ inputs.version }}-win-x64-setup.exe "$(find artifacts -path '*windows-x64*' -name '*.sig' | head -n 1)" \
             windows-x86_64=TraeJumper-${{ inputs.version }}-win-x64-setup.exe "$(find artifacts -path '*windows-x64*' -name '*.sig' | head -n 1)"
       - name: Create Release
         env:

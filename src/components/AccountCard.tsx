@@ -9,7 +9,15 @@ interface AccountCardProps {
     plan_type: string;
     created_at: number;
     is_current?: boolean;
+    is_client_active?: boolean;
+    active_in_clients?: string[];
+    has_cookies?: boolean;
+    oauth_enabled?: boolean;
+    oauth_refresh_expired_at?: string | null;
     token_expired_at?: string | null;
+    last_cookie_renewal_at?: number | null;
+    login_source?: string;
+    login_type?: string;
     checkin_status?: CheckinStatusResult;
   };
   usage: UsageSummary | null;
@@ -19,10 +27,55 @@ interface AccountCardProps {
   onSelect: (id: string) => void;
   onContextMenu: (e: React.MouseEvent, id: string) => void;
   onViewDetail: (id: string) => void;
+  onRefresh?: (id: string) => void;
+  refreshing?: boolean;
+  onRenewClient?: (id: string) => void;
+  renewingClient?: boolean;
 }
 
-export function AccountCard({ account, usage, credits, creditsLoading, selected, onSelect, onContextMenu, onViewDetail }: AccountCardProps) {
+// 登录来源展示名（始终显示在 Trae 账号旁边，不参与 Token 让位推导）
+function sourceLabel(src?: string): string {
+  switch (src) {
+    case "webview_oauth": return "WebView · OAuth自管";
+    case "webview_cookie": return "WebView · Cookie自管";
+    case "client_import": return "Trae客户端读取";
+    case "manual_token": return "手动 Token/Cookie";
+    default: return "未分类";
+  }
+}
+// 客户端激活类型展示名（仅客户端活跃时显示在"当前"标签里，用于 Token 让位区分）
+// Standalone 系列返回空字符串（客户端不活跃，不显示激活类型）
+function activationLabel(type?: string): string {
+  switch (type) {
+    case "native_oauth": return "客户端 OAuth";
+    case "injected_oauth": return "TJ OAuth";
+    case "injected_cookie": return "TJ Cookie";
+    case "injected_client": return "TJ 客户端";
+    case "injected_manual": return "TJ 手动 Token";
+    default: return ""; // standalone 系列不显示
+  }
+}
+// 来源标签样式（始终显示，中性灰，低饱和不抢状态色）
+function sourceTagClass(): string {
+  return "login-source-tag";
+}
+
+export function AccountCard({ account, usage, credits, creditsLoading, selected, onSelect, onContextMenu, onViewDetail, onRefresh, refreshing, onRenewClient, renewingClient }: AccountCardProps) {
   const isCredits = !!credits?.is_credits_billing;
+
+  // 将客户端显示名映射为短标签
+  const shortClientName = (name: string): string => {
+    if (name.includes("TraeCode")) return "TraeCode";
+    if (name.includes("TraeWork") || name.includes("SOLO")) return "TraeWork";
+    if (name.includes("国际")) return "Trae国际";
+    return name;
+  };
+  const activeClients = (account.active_in_clients || []).map(shortClientName);
+  // "当前"标签：客户端显示名 + 激活类型（例如 "TRAE CN 当前 · 客户端 OAuth"）
+  const activationLabelText = activationLabel(account.login_type);
+  const currentTagText = activeClients.length > 0
+    ? `${activeClients.join(" & ")} 当前${activationLabelText ? ` · ${activationLabelText}` : ""}`
+    : "";
 
   const formatCredits = (v: number) => {
     const n = Number.isFinite(v) ? v : 0;
@@ -32,13 +85,24 @@ export function AccountCard({ account, usage, credits, creditsLoading, selected,
   const formatDate = (timestamp: number) => {
     if (!timestamp) return "-";
     const d = new Date(timestamp * 1000);
-    return `${d.getFullYear()}/${d.getMonth() + 1}/${d.getDate()}`;
+    const pad = (n: number) => String(n).padStart(2, "0");
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
   };
 
-  const formatCreatedDate = (timestamp: number) => {
+  // 仅日期格式：yyyy-MM-dd（用于"最后到期"）
+  const formatDateOnly = (timestamp: number) => {
     if (!timestamp) return "-";
     const d = new Date(timestamp * 1000);
-    return `${d.getFullYear()}/${d.getMonth() + 1}/${d.getDate()}`;
+    const pad = (n: number) => String(n).padStart(2, "0");
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+  };
+
+  // 短格式：MM-dd HH:mm（用于"续签于"）
+  const formatShort = (timestamp: number) => {
+    if (!timestamp) return "-";
+    const d = new Date(timestamp * 1000);
+    const pad = (n: number) => String(n).padStart(2, "0");
+    return `${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
   };
 
   // 计算日期距今天数（负值表示已过期）
@@ -59,6 +123,16 @@ export function AccountCard({ account, usage, credits, creditsLoading, selected,
     return "expiry-safe";
   };
 
+  // token 专用颜色：token 时效为 8 小时（cookies 续签签发），
+  // 按小时判断——剩余不足 3 小时才变红，其余绿色
+  const getTokenExpiryClass = (timestamp: number): string => {
+    if (!timestamp) return "";
+    const hoursLeft = (timestamp * 1000 - Date.now()) / (60 * 60 * 1000);
+    if (hoursLeft < 0) return "expiry-expired";
+    if (hoursLeft < 3) return "expiry-urgent";
+    return "expiry-safe";
+  };
+
   const getUsageColor = (pct: number) => {
     if (pct >= 80) return "var(--danger)";
     if (pct >= 50) return "var(--warning)";
@@ -67,16 +141,32 @@ export function AccountCard({ account, usage, credits, creditsLoading, selected,
 
   const tokenStatus = ((): "normal" | "expiring" | "expired" | "unknown" => {
     if (!account.token_expired_at) return "unknown";
-    const expiry = new Date(account.token_expired_at).getTime();
-    if (isNaN(expiry)) return "unknown";
-    const now = Date.now();
-    if (expiry < now) return "expired";
-    if (expiry - now < 3600000) return "expiring";
+    const diffMs = new Date(account.token_expired_at).getTime() - Date.now();
+    if (diffMs <= 0) return "expired";
+    if (diffMs < 2 * 60 * 60 * 1000) return "expiring";
     return "normal";
   })();
 
   const statusText = tokenStatus === "expired" ? "已过期" : tokenStatus === "expiring" ? "即将过期" : "正常";
   const statusClass = tokenStatus === "expired" ? "expired" : tokenStatus === "expiring" ? "expiring" : "normal";
+
+  // Token 过期的相对时长描述（仅 expiring/expired 时展示，健康账号保持简洁）
+  const expiryHint = ((): string => {
+    if (tokenStatus !== "expiring" && tokenStatus !== "expired") return "";
+    if (!account.token_expired_at) return "";
+    const expiry = new Date(account.token_expired_at).getTime();
+    if (isNaN(expiry)) return "";
+    const diffMs = expiry - Date.now();
+    const absMin = Math.floor(Math.abs(diffMs) / 60000);
+    if (absMin < 60) return diffMs >= 0 ? `剩 ${absMin}分钟` : `${absMin}分钟前`;
+    const hours = absMin / 60;
+    if (hours < 24) return diffMs >= 0 ? `剩 ${hours.toFixed(1)}h` : `${hours.toFixed(1)}h 前`;
+    const days = hours / 24;
+    return diffMs >= 0 ? `剩 ${days.toFixed(1)}天` : `${days.toFixed(1)}天前`;
+  })();
+  const expiryTooltip = account.token_expired_at
+    ? `过期时间: ${new Date(account.token_expired_at).toLocaleString("zh-CN")}`
+    : "无过期时间信息";
 
   const planLabel = (() => {
     const raw = isCredits ? credits?.plan_name || "Credits" : usage?.plan_type || account.plan_type || "Free";
@@ -139,13 +229,25 @@ export function AccountCard({ account, usage, credits, creditsLoading, selected,
   // 旧配额体系的重置时间
   const resetTime = !isCredits ? (usage?.reset_time || 0) : 0;
 
+  // token/cookie 时间（完整格式 yyyy-MM-dd HH:mm:ss）：
+  // token 过期时间 = token_expired_at（RFC3339 字符串，转秒）；
+  // 续签时间 = last_cookie_renewal_at（上次用 cookies 续签的秒级时间戳）
+  const tokenExpiryTime = account.token_expired_at
+    ? Math.floor(new Date(account.token_expired_at).getTime() / 1000)
+    : 0;
+  const cookieRenewalTime = account.last_cookie_renewal_at || 0;
+  // OAuth 长期凭证（refresh_token）到期时间（秒）
+  const refreshExpiryTime = account.oauth_enabled && account.oauth_refresh_expired_at
+    ? Math.floor(new Date(account.oauth_refresh_expired_at).getTime() / 1000)
+    : 0;
+
   const displayName = account.email || account.name;
   const avatarLetter = (account.email || account.name || "?").charAt(0).toUpperCase();
   const barColor = getUsageColor(usagePercent);
 
   return (
     <div
-      className={`account-card ${selected ? "selected" : ""} ${account.is_current ? "current" : ""}`}
+      className={`account-card ${selected ? "selected" : ""} ${activeClients.length > 0 && tokenStatus !== "expired" ? "current" : ""} ${tokenStatus === "expired" ? "expired" : ""}`}
       onClick={() => onSelect(account.id)}
       onContextMenu={(e) => onContextMenu(e, account.id)}
     >
@@ -169,25 +271,61 @@ export function AccountCard({ account, usage, credits, creditsLoading, selected,
         <div className="card-info" onClick={(e) => { e.stopPropagation(); onViewDetail(account.id); }} title="查看详情">
           <div className="card-email">
             {displayName}
-            {account.is_current && (
-              <span className="current-tag-inline" title="当前激活账号">
+            {currentTagText && tokenStatus !== "expired" && (
+              <span className="current-tag-inline" title={activeClients.join("、")}>
                 <span className="current-tag-check">✓</span>
-                当前
+                {currentTagText}
               </span>
             )}
           </div>
-          <div className="card-name">Trae 账号</div>
+          <div className="card-name">
+            Trae 账号
+            <span className={sourceTagClass()} title={`登录来源：${sourceLabel(account.login_source)}`}>
+              {sourceLabel(account.login_source)}
+            </span>
+          </div>
         </div>
 
         <div className="card-badges">
           <span className={`plan-badge ${planLabel.toLowerCase() === "free" ? "free" : ""}`}>
             {planLabel}
           </span>
-          <span className={`status-tag ${statusClass}`}>
+          <span className={`status-tag ${statusClass}`} title={expiryTooltip}>
             <span className="status-dot"></span>
             {statusText}
+            {expiryHint && <span className="status-hint"> · {expiryHint}</span>}
           </span>
-          {account.checkin_status && (
+          {onRefresh && account.has_cookies && !account.is_client_active && (
+            <button
+              className={`refresh-btn ${refreshing ? "loading" : ""}`}
+              title="手动续签 Token"
+              onClick={(e) => { e.stopPropagation(); onRefresh(account.id); }}
+              disabled={refreshing}
+            >
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                <path d="M23 4v6h-6"/>
+                <path d="M1 20v-6h6"/>
+                <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>
+              </svg>
+              {refreshing ? "续签中" : "续签"}
+            </button>
+          )}
+          {onRenewClient && account.is_client_active && account.has_cookies && (
+            <button
+              className={`refresh-btn ${renewingClient ? "loading" : ""}`}
+              title="续签并写回客户端（手动测试：立即 GetUserToken 续签并写入客户端存储，不重启客户端）"
+              onClick={(e) => { e.stopPropagation(); onRenewClient(account.id); }}
+              disabled={renewingClient}
+            >
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                <path d="M23 4v6h-6"/>
+                <path d="M1 20v-6h6"/>
+                <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>
+              </svg>
+              {renewingClient ? "写回中" : "写回客户端"}
+            </button>
+          )}
+          {account.checkin_status && tokenStatus !== "expired" && (
             account.checkin_status.code === 0 ? (
               account.checkin_status.checked_in ? (
                 <span className="checkin-tag checked" title="今日已完成签到">
@@ -258,19 +396,9 @@ export function AccountCard({ account, usage, credits, creditsLoading, selected,
       </div>
 
       <div className="card-meta">
-        <span className="meta-item">
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-            <rect x="3" y="4" width="18" height="18" rx="2" ry="2"/>
-            <line x1="16" y1="2" x2="16" y2="6"/>
-            <line x1="8" y1="2" x2="8" y2="6"/>
-            <line x1="3" y1="10" x2="21" y2="10"/>
-          </svg>
-          添加于 {formatCreatedDate(account.created_at)}
-        </span>
         {isCredits && expiryInfo ? (
           totalAvailableCredits > 0 ? (
             <>
-              <span className="meta-item-sep">·</span>
               <span className="meta-item">
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                   <circle cx="12" cy="12" r="10"/>
@@ -286,14 +414,13 @@ export function AccountCard({ account, usage, credits, creditsLoading, selected,
               <span className="meta-item-sep">·</span>
               <span className="meta-item">
                 最后到期{" "}
-                <span className={getExpiryClass(expiryInfo.last.time)}>
-                  {formatDate(expiryInfo.last.time)}
+                <span>
+                  {formatDateOnly(expiryInfo.last.time)}
                 </span>
               </span>
             </>
           ) : (
             <>
-              <span className="meta-item-sep">·</span>
               <span className="meta-item">
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                   <circle cx="12" cy="12" r="10"/>
@@ -305,12 +432,44 @@ export function AccountCard({ account, usage, credits, creditsLoading, selected,
           )
         ) : !isCredits && resetTime ? (
           <>
-            <span className="meta-item-sep">·</span>
             <span className="meta-item">
               重置 {formatDate(resetTime)}
             </span>
           </>
         ) : null}
+        <span className="meta-item-sep">|</span>
+        <span className="meta-item">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+            <rect x="3" y="11" width="18" height="11" rx="2" ry="2"/>
+            <path d="M7 11V7a5 5 0 0 1 10 0v4"/>
+          </svg>
+          token 将于
+          <span className={tokenExpiryTime ? getTokenExpiryClass(tokenExpiryTime) : ""}>
+            {tokenExpiryTime ? formatDate(tokenExpiryTime) : "未知"}
+          </span>
+          过期
+        </span>
+        <span className="meta-item-sep">·</span>
+        {account.oauth_enabled ? (
+          <span className="meta-item" title="OAuth refresh_token 长期有效，TraeJumper 自动续签 Access Token">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ verticalAlign: "-2px" }}>
+              <polyline points="23 4 23 10 17 10"/>
+              <polyline points="1 20 1 14 7 14"/>
+              <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>
+            </svg>
+            Refresh 有效至{" "}
+            <span style={{ color: "var(--color-success, #3ba55d)" }}>
+              {refreshExpiryTime ? formatDate(refreshExpiryTime) : "未知"}
+            </span>
+          </span>
+        ) : (
+          <span className="meta-item">
+            cookie 续签于{" "}
+            <span>
+              {cookieRenewalTime ? formatShort(cookieRenewalTime) : "尚未续签"}
+            </span>
+          </span>
+        )}
       </div>
     </div>
   );

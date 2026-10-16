@@ -12,6 +12,11 @@ interface DetailModalProps {
     plan_type: string;
     cookies?: string;
     jwt_token?: string | null;
+    token_expired_at?: string | null;
+    last_cookie_renewal_at?: number | null;
+    oauth_enabled?: boolean;
+    oauth_refresh_token?: string | null;
+    oauth_refresh_expired_at?: string | null;
   } | null;
   usage: UsageSummary | null;
   credits?: CreditSummary | null;
@@ -84,6 +89,37 @@ export function DetailModal({ isOpen, onClose, account, usage, credits }: Detail
     if (!timestamp) return "-";
     return new Date(timestamp * 1000).toLocaleString("zh-CN");
   };
+
+  /** 格式化 RFC3339 时间字符串（token_expired_at）为本地时间 */
+  const formatRfc3339 = (s: string | null | undefined): string => {
+    if (!s) return "未知";
+    const d = new Date(s);
+    if (isNaN(d.getTime())) return "未知";
+    return d.toLocaleString("zh-CN");
+  };
+
+  /** Token 过期状态：expired=已过期 / soon=2h 内过期 / ok=正常 */
+  const tokenExpiryStatus = (s: string | null | undefined): "expired" | "soon" | "ok" | "unknown" => {
+    if (!s) return "unknown";
+    const d = new Date(s);
+    if (isNaN(d.getTime())) return "unknown";
+    const diffMs = d.getTime() - Date.now();
+    if (diffMs <= 0) return "expired";
+    if (diffMs <= 2 * 60 * 60 * 1000) return "soon";
+    return "ok";
+  };
+
+  const tokenExpiryMeta = (() => {
+    const status = tokenExpiryStatus(acct.token_expired_at);
+    const expiryText = formatRfc3339(acct.token_expired_at);
+    const labelMap: Record<string, { label: string; color: string }> = {
+      ok: { label: "有效", color: "#4caf50" },
+      soon: { label: "即将过期", color: "#ff9800" },
+      expired: { label: "已过期", color: "#f44336" },
+      unknown: { label: "未知", color: "#8a8f9c" },
+    };
+    return { status, expiryText, ...labelMap[status] };
+  })();
 
   const formatNumber = (num: number) => {
     const v = Number.isFinite(num) ? num : 0;
@@ -372,7 +408,7 @@ export function DetailModal({ isOpen, onClose, account, usage, credits }: Detail
             )}
 
             {/* Token / Cookies — 移到最下面 */}
-            {(acct.jwt_token || acct.cookies) && (
+            {(acct.jwt_token || acct.cookies || acct.oauth_refresh_token) && (
               <div className="secret-card">
                 {acct.jwt_token && (
                   <div className="secret-row">
@@ -382,6 +418,9 @@ export function DetailModal({ isOpen, onClose, account, usage, credits }: Detail
                         <path d="M7 11V7a5 5 0 0 1 10 0v4"/>
                       </svg>
                       Token
+                      <span className="secret-expiry" style={{ color: tokenExpiryMeta.color }} title={`过期时间: ${tokenExpiryMeta.expiryText}`}>
+                        · {tokenExpiryMeta.expiryText}
+                      </span>
                     </div>
                     <div className="secret-value-wrap">
                       <code className="secret-code">{acct.jwt_token}</code>
@@ -391,6 +430,36 @@ export function DetailModal({ isOpen, onClose, account, usage, credits }: Detail
                         title="复制 Token"
                       >
                         {copiedField === "token" ? "✓" : (
+                          <svg viewBox="0 0 24  24" fill="none" stroke="currentColor" strokeWidth="2" width="16" height="16">
+                            <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
+                            <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+                          </svg>
+                        )}
+                      </button>
+                    </div>
+                  </div>
+                )}
+                {acct.oauth_enabled && acct.oauth_refresh_token && (
+                  <div className="secret-row">
+                    <div className="secret-label">
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                        <polyline points="23 4 23 10 17 10"/>
+                        <polyline points="1 20 1 14 7 14"/>
+                        <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>
+                      </svg>
+                      Refresh Token
+                      <span className="secret-expiry" style={{ color: "#4caf50" }} title="OAuth 长期刷新令牌，TraeJumper 用它自动续签 Access Token（约 180 天有效）">
+                        · 有效期至 {formatRfc3339(acct.oauth_refresh_expired_at)}
+                      </span>
+                    </div>
+                    <div className="secret-value-wrap">
+                      <code className="secret-code">{acct.oauth_refresh_token}</code>
+                      <button
+                        className="secret-copy-btn"
+                        onClick={() => handleCopy(acct.oauth_refresh_token!, "refresh_token")}
+                        title="复制 Refresh Token"
+                      >
+                        {copiedField === "refresh_token" ? "✓" : (
                           <svg viewBox="0 0 24  24" fill="none" stroke="currentColor" strokeWidth="2" width="16" height="16">
                             <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
                             <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
@@ -410,6 +479,15 @@ export function DetailModal({ isOpen, onClose, account, usage, credits }: Detail
                         <line x1="15" y1="9" x2="15.01" y2="9"/>
                       </svg>
                       Cookies
+                      {acct.last_cookie_renewal_at ? (
+                        <span className="secret-expiry" title="cookies 需每 12 小时续签一次以保持 session 活跃">
+                          · 上次续签 {formatDate(acct.last_cookie_renewal_at)}
+                        </span>
+                      ) : (
+                        <span className="secret-expiry" style={{ color: "#8a8f9c" }}>
+                          · 尚未续签
+                        </span>
+                      )}
                     </div>
                     <div className="secret-value-wrap">
                       <code className="secret-code">{acct.cookies}</code>
