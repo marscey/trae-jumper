@@ -982,10 +982,10 @@ function App() {
         {
           title: "📋 文件内容",
           content: `<ul>
-<li>所有账号的完整信息</li>
-<li>Token 和 Cookies 数据</li>
-<li>使用量统计信息</li>
-<li>账号创建和更新时间</li>
+<li>基础信息（用户名、头像、Email 等）</li>
+<li>登录来源标记（OAuth / Cookie / 客户端导入 / 手动 Token）</li>
+<li>凭证数据（JWT Token、Cookies）</li>
+<li>OAuth Native 完整凭证链（Refresh Token + EC P-256 密钥对）</li>
 </ul>`,
           type: "list"
         },
@@ -995,17 +995,17 @@ function App() {
 <li>备份账号数据</li>
 <li>迁移到其他设备</li>
 <li>恢复误删的账号</li>
-<li>分享给其他设备使用</li>
 </ul>`,
           type: "list"
         },
         {
-          title: "⚠️ 安全提示",
+          title: "🚨 安全警告",
           content: `<ul>
-<li><strong>导出文件包含敏感信息</strong></li>
-<li><strong>请妥善保管导出的文件</strong></li>
-<li><strong>不要分享给他人</strong></li>
-<li>建议加密存储导出文件</li>
+<li><strong>包含 OAuth EC P-256 签名私钥</strong>（可伪造身份签发新 Token）</li>
+<li><strong>包含 Refresh Token</strong>（有效期 180 天）</li>
+<li><strong>包含登录凭证</strong>（JWT、Cookies）</li>
+<li><strong>不要分享给任何人、不要上传到云盘或 Git</strong></li>
+<li>迁移完成后建议立即销毁导出文件</li>
 </ul>`,
           type: "list"
         },
@@ -1056,40 +1056,45 @@ function App() {
         },
         {
           title: "📋 文件结构示例",
-          content: `{
-  "accounts": [
-    {
-      "id": "账号ID",
-      "name": "用户名",
-      "email": "邮箱地址",
-      "jwt_token": "Token字符串",
-      "cookies": "Cookies字符串",
-      "plan_type": "套餐类型",
-      "created_at": 时间戳,
-      "is_active": true,
-      ...
-    }
-  ],
-  "active_account_id": "当前活跃账号ID",
-  "current_account_id": "当前使用账号ID"
-}`,
+          content: `[
+  {
+    "name": "用户名",
+    "email": "邮箱地址",
+    "avatar_url": "头像URL",
+    "user_id": "Trae 用户ID",
+    "tenant_id": "租户ID",
+    "region": "CN",
+    "plan_type": "Free",
+    "jwt_token": "JWT Token 字符串",
+    "cookies": "Web Session Cookies",
+    "login_source": "webview_oauth",
+    "oauth_enabled": true,
+    "oauth_refresh_token": "OAuth Refresh Token",
+    "oauth_private_key_pem": "EC P-256 私钥 (PEM)",
+    "oauth_public_key_pem": "EC P-256 公钥 (PEM)",
+    "oauth_device_id": "DeviceID",
+    "oauth_machine_id": "MachineID",
+    "oauth_host": "https://api.trae.com.cn"
+  }
+]`,
           type: "code"
         },
         {
           title: "✅ 导入步骤",
           content: `<ul>
 <li>确认后选择 JSON 文件</li>
-<li>系统自动验证格式</li>
-<li>导入所有有效账号</li>
+<li>系统自动验证格式并恢复登录来源 + OAuth 凭证</li>
+<li>导入所有有效账号（重复账号跳过）</li>
 </ul>`,
           type: "list"
         },
         {
           title: "⚠️ 注意事项",
           content: `<ul>
-<li>仅支持本应用导出的格式</li>
-<li>导入会自动跳过重复账号</li>
-<li>建议定期备份账号数据</li>
+<li>仅支持本应用导出的格式（flat JSON array）</li>
+<li>OAuth Native 账号的 EC 私钥会一并导入，保证自管续签能力</li>
+<li>旧格式导出文件（无 login_source / oauth_* 字段）会自动按凭证特征推断来源</li>
+<li>迁移完成后建议立即销毁导出文件（含敏感凭证）</li>
 </ul>`,
           type: "list"
         }
