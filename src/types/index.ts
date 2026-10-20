@@ -25,6 +25,8 @@ export interface AccountBrief {
   login_source: string;
   /** 客户端激活类型：native_oauth / injected_oauth / injected_cookie / injected_client / injected_manual / standalone_oauth / standalone_cookie / standalone_manual。仅客户端活跃时显示在"当前"标签里。 */
   login_type: string;
+  /** per-account 自动续签后重启客户端覆盖开关：null=跟随总开关，true/false=强制开/关 */
+  restart_after_refresh_override?: boolean | null;
   /** 今日签到状态（启动时/点击刷新查询，可能为 undefined 表示未查） */
   checkin_status?: CheckinStatusResult;
 }
@@ -218,6 +220,8 @@ export interface CheckinConfig {
   auto_refresh_interval: number;
   /** 是否开启后端 Token 自动续签（后台每分钟检查即将过期的 Token 并用 cookies 续签） */
   auto_renew_enabled: boolean;
+  /** 自动续签后是否重启 Trae 客户端（写回 storage.json 后 kill+relaunch） */
+  auto_restart_after_refresh: boolean;
   /** 是否开启自动签到（晚于设定时间后自动为未签到账号签到） */
   auto_checkin_enabled: boolean;
   /** 自动签到触发时间点（HH:mm，24 小时制），例如 "22:00" */

@@ -282,6 +282,12 @@ pub struct CheckinConfig {
     /// 关闭后 Token 过期不会自动续期，需手动续签或切换账号触发
     #[serde(default = "default_auto_renew_enabled")]
     pub auto_renew_enabled: bool,
+    /// 自动续签后是否重启 Trae 客户端（写回 storage.json 后 kill+relaunch）
+    /// 关闭时仅 TJ 侧刷新 token，不写回客户端 storage.json（避免 verifyStrictTokenInBackground 登出）
+    /// ⚠️ 强烈建议开启：Trae 客户端会对比内存 token 和 storage.json token，
+    /// 不一致时 Mac 锁屏解锁或每 5min network recheck 会触发 clearUserInfo 登出
+    #[serde(default = "default_auto_restart_after_refresh")]
+    pub auto_restart_after_refresh: bool,
     /// 是否开启自动签到（晚于设定时间后自动为未签到账号签到）
     #[serde(default)]
     pub auto_checkin_enabled: bool,
@@ -302,6 +308,10 @@ fn default_auto_refresh_interval() -> u32 {
 }
 
 fn default_auto_renew_enabled() -> bool {
+    true
+}
+
+fn default_auto_restart_after_refresh() -> bool {
     true
 }
 
@@ -328,6 +338,7 @@ impl Default for CheckinConfig {
             auto_refresh_enabled: true,
             auto_refresh_interval: 10,
             auto_renew_enabled: true,
+            auto_restart_after_refresh: true,
             auto_checkin_enabled: false,
             auto_checkin_time: "22:00".to_string(),
             log_watchdog_enabled: true,
@@ -410,6 +421,11 @@ pub struct Account {
     /// OAuth 登录时 ExchangeToken 的真实 host（AuthCode callback 返回的，Refresh Flow 必须复用同一个 host）
     #[serde(default)]
     pub oauth_host: Option<String>,
+    /// per-account 覆盖：自动续签写回客户端后是否重启 Trae 客户端
+    /// None = 跟随 CheckinConfig.auto_restart_after_refresh 总开关
+    /// Some(true/false) = 强制开启/关闭（覆盖总开关）
+    #[serde(default)]
+    pub restart_after_refresh_override: Option<bool>,
 }
 
 impl Account {
@@ -451,6 +467,7 @@ impl Account {
             oauth_device_id: None,
             oauth_machine_id: None,
             oauth_host: None,
+            restart_after_refresh_override: None,
         }
     }
 }
@@ -529,6 +546,9 @@ pub struct AccountBrief {
     /// 由 AccountManager.get_accounts 结合客户端活跃态与 token_shared_with_client 推导。
     #[serde(default)]
     pub login_type: AccountLoginType,
+    /// per-account 覆盖开关：None=跟随总开关，Some(true/false)=强制开/关
+    #[serde(default)]
+    pub restart_after_refresh_override: Option<bool>,
 }
 
 impl From<&Account> for AccountBrief {
@@ -552,6 +572,7 @@ impl From<&Account> for AccountBrief {
             last_cookie_renewal_at: account.last_cookie_renewal_at,
             login_source: account.login_source,
             login_type: AccountLoginType::StandaloneManual, // 默认为仅库内，由 AccountManager 设置
+            restart_after_refresh_override: account.restart_after_refresh_override,
         }
     }
 }
@@ -578,6 +599,7 @@ impl AccountBrief {
             last_cookie_renewal_at: account.last_cookie_renewal_at,
             login_source: account.login_source,
             login_type: AccountLoginType::StandaloneManual, // 默认为仅库内，由 AccountManager 设置
+            restart_after_refresh_override: account.restart_after_refresh_override,
         }
     }
 }

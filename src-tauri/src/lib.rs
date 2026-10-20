@@ -300,6 +300,19 @@ async fn update_checkin_config(config: CheckinConfig, state: State<'_, AppState>
     Ok(())
 }
 
+/// 设置 per-account 自动续签后重启客户端覆盖开关
+/// enabled=true/false=强制开/关，enabled=null=跟随总开关
+#[tauri::command]
+async fn set_account_restart_override(account_id: String, enabled: Option<bool>, state: State<'_, AppState>) -> Result<()> {
+    println!("[RESTARTOVRD] 收到请求 account_id={} enabled={:?}", account_id, enabled);
+    let mut manager = state.account_manager.lock().await;
+    manager
+        .set_account_restart_override(&account_id, enabled)
+        .map_err(|e| ApiError { message: e.to_string() })?;
+    println!("[RESTARTOVRD] 成功 account_id={} enabled={:?}", account_id, enabled);
+    Ok(())
+}
+
 /// 获取「切换账号当作新设备」开关状态
 #[tauri::command]
 async fn get_switch_as_new_device(state: State<'_, AppState>) -> Result<bool> {
@@ -803,6 +816,7 @@ pub fn run() {
             reset_checkin_device,
             get_checkin_config,
             update_checkin_config,
+            set_account_restart_override,
             get_switch_as_new_device,
             set_switch_as_new_device,
             regenerate_device_id,

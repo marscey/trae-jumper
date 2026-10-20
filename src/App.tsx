@@ -19,7 +19,7 @@ import { Settings } from "./pages/Settings";
 import { About } from "./pages/About";
 import { useToast } from "./hooks/useToast";
 import * as api from "./api";
-import type { AccountBrief, CheckinAllStatusItem, CheckinHeaderEntry, CreditSummary, UsageSummary } from "./types";
+import type { AccountBrief, CheckinAllStatusItem, CheckinConfig, CheckinHeaderEntry, CreditSummary, UsageSummary } from "./types";
 import "./App.css";
 
 interface AccountWithUsage extends AccountBrief {
@@ -55,7 +55,7 @@ function App() {
     }
   }, [currentClientName]);
 
-  // 启动时加载当前客户端名
+  // 启动时加载当前客户端名 + 全局签到配置
   useEffect(() => {
     api.getTraeApps()
       .then((apps) => {
@@ -65,6 +65,9 @@ function App() {
           setCurrentLoginUrl(current.login_url);
         }
       })
+      .catch(() => {});
+    api.getCheckinConfig()
+      .then((cfg) => setCheckinConfig(cfg))
       .catch(() => {});
   }, []);
 
@@ -101,6 +104,10 @@ function App() {
   // 刷新中的账号 ID
   const [refreshingIds, setRefreshingIds] = useState<Set<string>>(new Set());
   const [renewingClientIds, setRenewingClientIds] = useState<Set<string>>(new Set());
+  // 检测当前账号（重新扫描客户端登录态）
+  const [checkCurrentLoading, setCheckCurrentLoading] = useState(false);
+  // 全局签到配置（DetailModal 三态开关需要总开关状态）
+  const [checkinConfig, setCheckinConfig] = useState<CheckinConfig | null>(null);
 
   // 更新 Token 弹窗状态
   const [updateTokenModal, setUpdateTokenModal] = useState<{
@@ -1193,6 +1200,22 @@ function App() {
     }
   };
 
+  // 检测当前账号：重新扫描所有已安装客户端的 storage.json，修正"客户端已退出但 TJ 还显示激活态"的标签
+  const handleCheckCurrent = async () => {
+    if (checkCurrentLoading) return;
+    setCheckCurrentLoading(true);
+    try {
+      addToast("info", "正在检测客户端登录态...");
+      await refreshAccountsData();
+      addToast("success", "检测完成，已更新账号状态");
+    } catch (err) {
+      console.warn("[WARN] 检测当前账号失败:", err);
+      addToast("error", "检测失败，请重试");
+    } finally {
+      setCheckCurrentLoading(false);
+    }
+  };
+
   // 批量删除选中账号（优化：改进错误处理和反馈）
   const handleBatchDelete = () => {
     if (selectedIds.size === 0) {
@@ -1414,6 +1437,21 @@ function App() {
                       {selectedIds.size > 0 ? `刷新选中 (${selectedIds.size})` : "刷新全部"}
                     </button>
                     <button
+                      className={`batch-btn ${checkCurrentLoading ? "loading" : ""}`}
+                      onClick={handleCheckCurrent}
+                      disabled={checkCurrentLoading || accounts.length === 0}
+                      title="重新扫描所有客户端 storage.json，修正'当前活跃'标签（解决客户端已退出但 TJ 仍显示激活态的问题）"
+                    >
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="14" height="14">
+                        <circle cx="12" cy="12" r="10"/>
+                        <circle cx="12" cy="12" r="4"/>
+                        <line x1="21.17" y1="8" x2="12" y2="8"/>
+                        <line x1="3.95" y1="6.06" x2="8.54" y2="14"/>
+                        <line x1="10.88" y1="21.94" x2="15.46" y2="14"/>
+                      </svg>
+                      {checkCurrentLoading ? "检测中..." : "检测当前账号"}
+                    </button>
+                    <button
                       className="batch-btn"
                       onClick={handleCheckinAll}
                       disabled={checkinLoading || accounts.length === 0}
@@ -1522,6 +1560,7 @@ function App() {
                       refreshing={refreshingIds.has(account.id)}
                       onRenewClient={handleRenewClientToken}
                       renewingClient={renewingClientIds.has(account.id)}
+                      checkinConfig={checkinConfig}
                     />
                   ))}
                 </div>
@@ -1542,6 +1581,7 @@ function App() {
                       refreshing={refreshingIds.has(account.id)}
                       onRenewClient={handleRenewClientToken}
                       renewingClient={renewingClientIds.has(account.id)}
+                      checkinConfig={checkinConfig}
                     />
                   ))}
                 </div>
@@ -1689,6 +1729,22 @@ function App() {
         account={detailAccount}
         usage={detailAccount?.usage || null}
         credits={detailAccount?.credits || null}
+        checkinConfig={checkinConfig}
+        onAccountChanged={async () => {
+          await refreshAccountsData();
+          // 只同步 restart_after_refresh_override 字段，保留 prev 的完整 token 等详情数据
+          // （accounts 是 AccountBrief[]，如果 { ...fresh } 展开会把 cookies/jwt_token 等覆盖没）
+          setDetailAccount((prev) => {
+            if (!prev) return prev;
+            const fresh = accounts.find((a) => a.id === prev.id);
+            if (!fresh) return prev;
+            return {
+              ...prev,
+              restart_after_refresh_override: fresh.restart_after_refresh_override,
+              checkin_status: fresh.checkin_status,
+            };
+          });
+        }}
       />
 
       {/* 用量明细弹窗 */}

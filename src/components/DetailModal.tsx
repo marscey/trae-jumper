@@ -1,5 +1,6 @@
-import { useState, useMemo } from "react";
-import type { CreditSummary, UsageSummary, RewardCreditsEntry } from "../types";
+import { useState, useMemo, useEffect } from "react";
+import type { CreditSummary, UsageSummary, RewardCreditsEntry, CheckinConfig } from "../types";
+import * as api from "../api";
 
 interface DetailModalProps {
   isOpen: boolean;
@@ -17,15 +18,29 @@ interface DetailModalProps {
     oauth_enabled?: boolean;
     oauth_refresh_token?: string | null;
     oauth_refresh_expired_at?: string | null;
+    /** per-account 自动续签后重启客户端覆盖开关：null=跟随总开关，true/false=强制开/关 */
+    restart_after_refresh_override?: boolean | null;
   } | null;
   usage: UsageSummary | null;
   credits?: CreditSummary | null;
+  /** 全局签到配置（总开关状态，用于三态控件显示"跟随总开关"的实际值） */
+  checkinConfig?: CheckinConfig | null;
+  /** 设置变更后通知父组件刷新账号列表 */
+  onAccountChanged?: () => void;
 }
 
-export function DetailModal({ isOpen, onClose, account, usage, credits }: DetailModalProps) {
+export function DetailModal({ isOpen, onClose, account, usage, credits, checkinConfig, onAccountChanged }: DetailModalProps) {
   // ===== 所有 hooks 必须在组件最顶层调用（在任何条件 return 之前）=====
   const [copiedField, setCopiedField] = useState<string | null>(null);
   const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean>>({});
+  const [restartOverrideSaving, setRestartOverrideSaving] = useState(false);
+  // 乐观更新：用户点击按钮后立即更新此 state，让 UI 立刻反映变更
+  const [pendingOverride, setPendingOverride] = useState<boolean | null>(null);
+
+  // account 变化（modal 打开新账号）时同步 pendingOverride
+  useEffect(() => {
+    if (account) setPendingOverride(account.restart_after_refresh_override ?? null);
+  }, [account?.id]);
 
   // 奖励积分分组 — 仅聚合"签到奖励"，其他奖励（如老用户福利）保持独立
   const groupedRewards = useMemo(() => {
@@ -508,6 +523,77 @@ export function DetailModal({ isOpen, onClose, account, usage, credits }: Detail
                 )}
               </div>
             )}
+
+            {/* 账号级设置：续签重启策略 */}
+            <div className="detail-section">
+              <h3>续签重启策略</h3>
+              <div className="detail-row detail-row-vertical">
+                <div className="detail-label" style={{ flexDirection: "column", alignItems: "flex-start", gap: "4px", minWidth: "auto" }}>
+                  <span>自动续签后是否重启客户端</span>
+                  <span style={{ fontSize: "11px", color: "var(--text-muted)", lineHeight: "1.5" }}>
+                    跟随总开关 = 使用全局"自动续签后重启 Trae 客户端"的设置；强制开/关 = 仅对此账号生效
+                  </span>
+                </div>
+                <div className="restart-override-group">
+                  {(() => {
+                    // 使用 pendingOverride（乐观更新 state），而不是 acct 上的原始值
+                    const current = pendingOverride;
+                    const globalVal = checkinConfig?.auto_restart_after_refresh ?? true;
+                    console.log("[DEBUG DetailModal-restart] 渲染：accountId=", acct.id, "pendingOverride=", pendingOverride, "restartOverrideSaving=", restartOverrideSaving);
+                    const handleSet = async (val: boolean | null) => {
+                      console.log("[DEBUG DetailModal-restart] handleSet：目标 val=", val);
+                      if (restartOverrideSaving) {
+                        console.log("[DEBUG DetailModal-restart] guard 拦截：restartOverrideSaving=true");
+                        return;
+                      }
+                      // 乐观更新：先改本地 state，让 UI 立刻反映
+                      setPendingOverride(val);
+                      setRestartOverrideSaving(true);
+                      try {
+                        await api.setAccountRestartOverride(acct.id, val);
+                        console.log("[DEBUG DetailModal-restart] api 成功，触发 onAccountChanged");
+                        onAccountChanged?.();
+                      } catch (err) {
+                        console.error("[DEBUG DetailModal-restart] 失败，回滚:", err);
+                        // 失败回滚
+                        setPendingOverride(acct.restart_after_refresh_override ?? null);
+                      } finally {
+                        setRestartOverrideSaving(false);
+                      }
+                    };
+                    const segments: Array<{ label: string; val: boolean | null; hint?: string }> = [
+                      { label: "跟随总开关", val: null, hint: `（当前：${globalVal ? "重启" : "不重启"}）` },
+                      { label: "开启", val: true },
+                      { label: "关闭", val: false },
+                    ];
+                    return segments.map((seg) => {
+                      const active = current === seg.val;
+                      const showSpinner = restartOverrideSaving && active;
+                      return (
+                        <button
+                          key={String(seg.val)}
+                          className={`restart-override-btn ${active ? "active" : ""} ${restartOverrideSaving ? "saving" : ""}`}
+                          disabled={restartOverrideSaving}
+                          onClick={() => {
+                            console.log("[DEBUG DetailModal-restart] onClick fired, seg.val=", seg.val);
+                            handleSet(seg.val);
+                          }}
+                        >
+                          {showSpinner && (
+                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="restart-override-spinner">
+                              <circle cx="12" cy="12" r="10" strokeOpacity="0.25" />
+                              <path d="M12 2a10 10 0 0 1 10 10" />
+                            </svg>
+                          )}
+                          {seg.label}
+                          {seg.hint && <span className="restart-override-hint">{seg.hint}</span>}
+                        </button>
+                      );
+                    });
+                  })()}
+                </div>
+              </div>
+            </div>
 
             {/* 旧配额体系（国际版） */}
             {!isCredits && usage && (

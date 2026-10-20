@@ -742,6 +742,11 @@ pub struct TraeLoginInfo {
     pub avatar_url: String,
     pub host: String,
     pub region: String,
+    /// Token 真实过期时间（RFC3339）。None 时回退硬编码 14 天（旧版调用方未传时兼容）。
+    /// 注意：客户端 verifyStrictTokenInBackground 校验的是 JWT 的 exp claim，
+    /// 这个 metadata 仅用于客户端 display 或部分边缘校验——但为避免运维混淆，
+    /// 应尽量传入真实过期时间，而非硬编码 14 天。
+    pub token_expired_at: Option<String>,
 }
 
 /// 将账号登录信息写入 Trae IDE
@@ -773,9 +778,15 @@ pub fn write_trae_login_info_for_variant(info: &TraeLoginInfo, variant: Option<&
     let obj = json.as_object_mut()
         .ok_or_else(|| anyhow!("storage.json 格式错误"))?;
 
-    // 计算过期时间（14天后）
+    // 计算 metadata 中的过期时间：优先使用真实 token 过期时间（避免硬编码 14 天造成
+    // JWT 实际过期时间与 metadata 不一致），None 时回退 14 天（旧版调用方兼容）。
     let now = chrono::Utc::now();
-    let expired_at = now + chrono::Duration::days(14);
+    let expired_at_dt = info
+        .token_expired_at
+        .as_deref()
+        .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+        .map(|t| t.with_timezone(&chrono::Utc))
+        .unwrap_or_else(|| now + chrono::Duration::days(14));
     let refresh_expired_at = now + chrono::Duration::days(180);
 
     // 当前目标应用变体（决定 host 与区域格式）
@@ -801,7 +812,7 @@ pub fn write_trae_login_info_for_variant(info: &TraeLoginInfo, variant: Option<&
     let auth_info = serde_json::json!({
         "token": info.token,
         "refreshToken": info.refresh_token.clone().unwrap_or_default(),
-        "expiredAt": expired_at.format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string(),
+        "expiredAt": expired_at_dt.format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string(),
         "refreshExpiredAt": refresh_expired_at.format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string(),
         "tokenReleaseAt": now.format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string(),
         "userId": info.user_id,

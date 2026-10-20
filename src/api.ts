@@ -529,6 +529,7 @@ export async function getCheckinConfig(): Promise<CheckinConfig> {
     auto_refresh_enabled: true,
     auto_refresh_interval: 10,
     auto_renew_enabled: true,
+    auto_restart_after_refresh: true,
     auto_checkin_enabled: false,
     auto_checkin_time: "22:00",
     log_watchdog_enabled: true,
@@ -539,6 +540,12 @@ export async function getCheckinConfig(): Promise<CheckinConfig> {
 // 更新签到全局配置
 export async function updateCheckinConfig(config: CheckinConfig): Promise<void> {
   return safeInvoke("update_checkin_config", { config }, async () => delay(undefined));
+}
+
+// 设置 per-account 自动续签后重启客户端覆盖开关
+// enabled=true/false=强制开/关，enabled=null=跟随总开关
+export async function setAccountRestartOverride(accountId: string, enabled: boolean | null): Promise<void> {
+  return safeInvoke("set_account_restart_override", { accountId, enabled }, async () => delay(undefined));
 }
 
 // 获取「切换账号当作新设备」开关状态
