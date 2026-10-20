@@ -196,8 +196,15 @@ impl AccountManager {
         );
 
         account.avatar_url = avatar_url;
+        // 先从 JWT 解析 exp（借用 token，不能放在 move 之后）
+        let token_expired_at = crate::api::TraeApiClient::parse_jwt_exp(&token)
+            .ok()
+            .and_then(|exp| {
+                chrono::DateTime::from_timestamp(exp, 0)
+                    .map(|dt| dt.to_rfc3339())
+            });
         account.jwt_token = Some(token);
-        account.token_expired_at = None;
+        account.token_expired_at = token_expired_at;
         account.login_source = source;
         // 浏览器登录刚捕获 cookies，标记上次续签时间，避免刚登录就被判定为 session 过期而立即续签
         account.last_cookie_renewal_at = Some(chrono::Utc::now().timestamp());
@@ -1756,8 +1763,22 @@ impl AccountManager {
     }
 
     /// 导出账号数据
+    /// login_source 采用 AccountBrief 运行时修正后的有效值，而非 Account 原始值：
+    /// - oauth_enabled=true → 强制 WebviewOauth（无论 Account.login_source 是什么）
+    /// - Unknown + 有 cookies → 推断 WebviewCookie
     pub fn export_accounts(&self) -> Result<String> {
         let export_data: Vec<serde_json::Value> = self.store.accounts.iter().map(|acc| {
+            // —— 计算修正后的有效 login_source（与 get_accounts 中 AccountBrief 推导逻辑一致）——
+            let effective_source = if acc.oauth_enabled {
+                // OAuth 凭证已启用，无论 Account.login_source 原始值是什么，导出值强制修正为 WebviewOauth
+                AccountLoginSource::WebviewOauth
+            } else if acc.login_source == AccountLoginSource::Unknown {
+                // Unknown 按凭证特征推断
+                if !acc.cookies.is_empty() { AccountLoginSource::WebviewCookie }
+                else { AccountLoginSource::Unknown }
+            } else {
+                acc.login_source
+            };
             serde_json::json!({
                 "name": acc.name,
                 "email": acc.email,
@@ -1769,6 +1790,16 @@ impl AccountManager {
                 "avatar_url": acc.avatar_url,
                 "jwt_token": acc.jwt_token,
                 "machine_id": acc.machine_id,
+                "login_source": effective_source,
+                // —— OAuth Native 完整凭证链（v1.0.0 新增，防止导入后 OAuth 账号丢失自管能力）——
+                "oauth_enabled": acc.oauth_enabled,
+                "oauth_refresh_token": acc.oauth_refresh_token,
+                "oauth_refresh_expired_at": acc.oauth_refresh_expired_at,
+                "oauth_public_key_pem": acc.oauth_public_key_pem,
+                "oauth_private_key_pem": acc.oauth_private_key_pem,
+                "oauth_device_id": acc.oauth_device_id,
+                "oauth_machine_id": acc.oauth_machine_id,
+                "oauth_host": acc.oauth_host,
             })
         }).collect();
 
@@ -1808,16 +1839,32 @@ impl AccountManager {
                 .unwrap_or("")
                 .to_string();
 
+            // 读取导出的来源标记（老格式导出可能没有该字段，默认 Unknown）
+            let exported_login_source: AccountLoginSource = item.get("login_source")
+                .and_then(|v| serde_json::from_value::<AccountLoginSource>(v.clone()).ok())
+                .unwrap_or_default();
+
+            // 读取 OAuth Native 完整凭证链（老格式导出可能没有这些字段，默认零值）
+            let oauth_enabled = item.get("oauth_enabled").and_then(|v| v.as_bool()).unwrap_or(false);
+            let oauth_refresh_token = item.get("oauth_refresh_token").and_then(|v| v.as_str().map(|s| s.to_string()));
+            let oauth_refresh_expired_at = item.get("oauth_refresh_expired_at").and_then(|v| v.as_str().map(|s| s.to_string()));
+            let oauth_public_key_pem = item.get("oauth_public_key_pem").and_then(|v| v.as_str().map(|s| s.to_string()));
+            let oauth_private_key_pem = item.get("oauth_private_key_pem").and_then(|v| v.as_str().map(|s| s.to_string()));
+            let oauth_device_id = item.get("oauth_device_id").and_then(|v| v.as_str().map(|s| s.to_string()));
+            let oauth_machine_id = item.get("oauth_machine_id").and_then(|v| v.as_str().map(|s| s.to_string()));
+            let oauth_host = item.get("oauth_host").and_then(|v| v.as_str().map(|s| s.to_string()));
+
             // 优先使用 Token 添加（Token 方式更稳定，且不依赖 cookies）
             let add_success = if !token.is_empty() {
                 let cookies_opt = if cookies.is_empty() { None } else { Some(cookies.clone()) };
                 let preferred_name = if exported_name.is_empty() { None } else { Some(exported_name.clone()) };
-                match self.add_account_by_token(token.clone(), cookies_opt, preferred_name, AccountLoginSource::ManualToken).await {
+                // 使用导出的来源标记，而不是硬编码 ManualToken
+                match self.add_account_by_token(token.clone(), cookies_opt, preferred_name, exported_login_source).await {
                     Ok(_) => true,
                     Err(e) => {
                         let err_str = e.to_string();
                         if err_str.contains("已存在") {
-                            // 账号已存在，也算导入成功（后续会更新名称）
+                            // 账号已存在，也算导入成功（后续会更新名称 + 来源 + OAuth 字段）
                             true
                         } else {
                             // API 调用失败（如网络不可达、Token 过期等），尝试直接从导出数据创建账号
@@ -1841,7 +1888,23 @@ impl AccountManager {
                                 fallback_account.avatar_url = exported_avatar.clone();
                                 fallback_account.region = exported_region.clone();
                                 fallback_account.jwt_token = Some(token.clone());
-                                fallback_account.token_expired_at = None;
+                                // 从 JWT 解析 exp 设置 token_expired_at，避免后台 refresh 误判
+                                fallback_account.token_expired_at = crate::api::TraeApiClient::parse_jwt_exp(&token)
+                                    .ok()
+                                    .and_then(|exp| {
+                                        chrono::DateTime::from_timestamp(exp, 0)
+                                            .map(|dt| dt.to_rfc3339())
+                                    });
+                                // 恢复导出的来源标记 + OAuth 凭证链（clone 保留原值供补丁阶段使用）
+                                fallback_account.login_source = exported_login_source;
+                                fallback_account.oauth_enabled = oauth_enabled;
+                                fallback_account.oauth_refresh_token = oauth_refresh_token.clone();
+                                fallback_account.oauth_refresh_expired_at = oauth_refresh_expired_at.clone();
+                                fallback_account.oauth_public_key_pem = oauth_public_key_pem.clone();
+                                fallback_account.oauth_private_key_pem = oauth_private_key_pem.clone();
+                                fallback_account.oauth_device_id = oauth_device_id.clone();
+                                fallback_account.oauth_machine_id = oauth_machine_id.clone();
+                                fallback_account.oauth_host = oauth_host.clone();
 
                                 let already_exists = self.store.accounts.iter().any(|a| a.user_id == fallback_account.user_id);
                                 if already_exists {
@@ -1870,14 +1933,48 @@ impl AccountManager {
                 false
             };
 
-            if !exported_name.is_empty() && !exported_user_id.is_empty() {
+            // 补丁阶段：无论是新建、已存在还是 fallback，统一补全导出时的来源 + OAuth 字段
+            // 顺序：先恢复 OAuth 凭证（决定账号类型），再按凭证修正 login_source
+            // （因为 add_account_by_token / add_account 只负责打基础凭证，来源和 OAuth 链需要额外恢复）
+            if !exported_user_id.is_empty() {
                 if let Some(acc) = self.store.accounts.iter_mut().find(|a| a.user_id == exported_user_id) {
-                    acc.name = exported_name.clone();
+                    if !exported_name.is_empty() {
+                        acc.name = exported_name.clone();
+                    }
                     if !exported_avatar.is_empty() {
                         acc.avatar_url = exported_avatar.clone();
                     }
                     if !exported_region.is_empty() {
                         acc.region = exported_region.clone();
+                    }
+                    // 1. 先恢复 OAuth Native 凭证链（只要导出值有任何一个 OAuth 字段，就整体覆盖）
+                    let has_oauth_in_export = oauth_enabled || oauth_refresh_token.is_some();
+                    if has_oauth_in_export {
+                        acc.oauth_enabled = oauth_enabled;
+                        acc.oauth_refresh_token = oauth_refresh_token;
+                        acc.oauth_refresh_expired_at = oauth_refresh_expired_at;
+                        acc.oauth_public_key_pem = oauth_public_key_pem;
+                        acc.oauth_private_key_pem = oauth_private_key_pem;
+                        acc.oauth_device_id = oauth_device_id;
+                        acc.oauth_machine_id = oauth_machine_id;
+                        acc.oauth_host = oauth_host;
+                    }
+                    // 2. 确保 token_expired_at 被正确解析（所有路径兜底：add_account_by_token / fallback / 已存在账号）
+                    if acc.token_expired_at.is_none() {
+                        if let Some(jwt) = acc.jwt_token.as_deref() {
+                            acc.token_expired_at = crate::api::TraeApiClient::parse_jwt_exp(jwt)
+                                .ok()
+                                .and_then(|exp| {
+                                    chrono::DateTime::from_timestamp(exp, 0)
+                                        .map(|dt| dt.to_rfc3339())
+                                });
+                        }
+                    }
+                    // 3. 再设置 login_source：OAuth 凭证优先修正（对齐 AccountBrief 运行时逻辑）
+                    if acc.oauth_enabled {
+                        acc.login_source = AccountLoginSource::WebviewOauth;
+                    } else if exported_login_source != AccountLoginSource::Unknown {
+                        acc.login_source = exported_login_source;
                     }
                 }
             }
