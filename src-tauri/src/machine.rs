@@ -9,6 +9,12 @@ use std::process::Command;
 use winreg::enums::*;
 #[cfg(target_os = "windows")]
 use winreg::RegKey;
+#[cfg(target_os = "windows")]
+use std::os::windows::process::CommandExt;
+
+/// Windows CreateProcess flag：不创建新的控制台窗口（隐藏 cmd.exe / taskkill 等弹出的黑框）
+#[cfg(target_os = "windows")]
+const CREATE_NO_WINDOW: u32 = 0x08000000;
 
 /// Windows 注册表中 MachineGuid 的路径
 #[cfg(target_os = "windows")]
@@ -144,6 +150,7 @@ pub fn is_trae_running() -> bool {
     for exe_name in variant.windows_exe_names {
         let output = Command::new("tasklist")
             .args(["/FI", &format!("IMAGENAME eq {}", exe_name), "/NH"])
+            .creation_flags(CREATE_NO_WINDOW)
             .output();
 
         match output {
@@ -213,6 +220,7 @@ pub fn kill_trae() -> Result<()> {
     for exe_name in variant.windows_exe_names {
         let _ = Command::new("taskkill")
             .args(["/IM", exe_name])
+            .creation_flags(CREATE_NO_WINDOW)
             .output();
         any_killed = true;
     }
@@ -226,6 +234,7 @@ pub fn kill_trae() -> Result<()> {
         for exe_name in variant.windows_exe_names {
             let _ = Command::new("taskkill")
                 .args(["/F", "/IM", exe_name, "/T"])
+                .creation_flags(CREATE_NO_WINDOW)
                 .output();
         }
 
@@ -369,6 +378,7 @@ pub fn is_trae_running_for_variant(variant: &crate::trae_app::TraeAppVariant) ->
     for exe_name in variant.windows_exe_names {
         let output = Command::new("tasklist")
             .args(["/FI", &format!("IMAGENAME eq {}", exe_name), "/NH"])
+            .creation_flags(CREATE_NO_WINDOW)
             .output();
         match output {
             Ok(out) => {
@@ -393,6 +403,7 @@ pub fn kill_trae_for_variant(variant: &crate::trae_app::TraeAppVariant) -> Resul
     for exe_name in variant.windows_exe_names {
         let _ = Command::new("taskkill")
             .args(["/F", "/IM", exe_name, "/T"])
+            .creation_flags(CREATE_NO_WINDOW)
             .output();
     }
     std::thread::sleep(std::time::Duration::from_millis(1200));
@@ -410,6 +421,7 @@ pub fn launch_trae_for_variant(variant: &crate::trae_app::TraeAppVariant) -> Res
         .ok_or_else(|| anyhow!("未找到 {} 的安装路径", variant.display_name))?;
     println!("[INFO] 正在启动 {} ({})...", variant.display_name, exe_path.display());
     Command::new(&exe_path)
+        .creation_flags(CREATE_NO_WINDOW)
         .spawn()
         .map_err(|e| anyhow!("启动 {} 失败: {}", variant.display_name, e))?;
     Ok(())
@@ -690,6 +702,7 @@ pub fn open_trae() -> Result<()> {
     println!("[INFO] 正在启动 Trae IDE: {}", trae_exe.display());
 
     Command::new(&trae_exe)
+        .creation_flags(CREATE_NO_WINDOW)
         .spawn()
         .map_err(|e| anyhow!("启动 Trae IDE 失败: {}", e))?;
 
