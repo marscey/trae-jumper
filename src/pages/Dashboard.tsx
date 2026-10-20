@@ -108,7 +108,7 @@ export const Dashboard = memo(function Dashboard({ accounts, currentClientName }
             <div className="stat-card-info">
               <span className="stat-card-label">{hasCredits ? '总积分' : '总配额'}</span>
               <span className="stat-card-value">{hasCredits ? formatCredits(totalLimit) : Math.round(totalLimit)}</span>
-              <span className="stat-card-change">{hasCredits ? '通用+Work 积分合计' : 'Fast Requests'}</span>
+              <span className="stat-card-change">{hasCredits ? '积分合计' : 'Fast Requests'}</span>
             </div>
             <div className="stat-card-icon">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
