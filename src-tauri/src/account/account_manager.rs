@@ -23,6 +23,12 @@ pub(crate) struct ClientLogin {
     pub user_id: String,
     pub email: String,
     pub token: Option<String>,
+    /// cloudide 中的 OAuth refresh_token（如果存在）。
+    /// TJ OAuth 注入 / 客户端原生 OAuth 登录都会写入此字段。
+    /// 有此字段 → 可通过 ExchangeToken（Refresh Flow）静默续签。
+    pub refresh_token: Option<String>,
+    /// refresh_token 过期时间（RFC3339），用于判断是否需要在过期前轮换。
+    pub refresh_expired_at: Option<String>,
     /// 该客户端是否为"新版自管理架构"：storage.json 含 `iCubeAuthInfo://icube-dc:*`
     /// 设备密钥键。此类客户端用设备密钥/OAuth refresh token 自行续签登录态，
     /// 不依赖 TraeJumper 注入/续签 token；调用 GetUserToken 会作废其自管的新 token，
@@ -407,16 +413,46 @@ impl AccountManager {
             );
         }
 
+        // === self_managed 客户端诊断 ===
+        // 读取目标客户端的 storage.json，判断是否含 icube-dc:* 设备密钥。
+        // self_managed 客户端自行用 OAuth refresh flow 维护 icube-dc 票据，
+        // TJ 注入 cloudide 的 GetUserToken JWT（8h 有效期）会与 icube-dc 并存——
+        // 这是可运行状态（Fix A 确保 TJ 会在过期前续签 cloudide），但需要日志提醒
+        // 以便运维排查 "为什么客户端登出" 这类问题时快速识别矛盾来源。
+        let target_self_managed = self.is_client_self_managed(None);
+        let now_ts = chrono::Utc::now().timestamp();
+        let exp_ts = account.token_expired_at.as_deref()
+            .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+            .map(|t| t.timestamp())
+            .unwrap_or(now_ts + 8 * 3600);
+        let exp_hrs = (exp_ts - now_ts) / 3600;
+        let token_source = if account.oauth_enabled { "OAuth/ExchangeToken" } else { "cookies/GetUserToken" };
+        match (target_self_managed, account.oauth_enabled) {
+            (true, true) => println!(
+                "[WARN switch] 目标客户端 {} 是 self_managed（含 icube-dc:* 设备密钥），即将注入 {} 签发的 cloudide JWT（剩余 {}h 过期）。客户端 icube-dc 票据（OAuth refresh 15d 有效期）与 cloudide（8h）将并存，Fix A 已确保 TJ 会在 2h 宽限期前续签 cloudide 并重新写入，不会因让位而让其过期。",
+                crate::trae_app::current().display_name, token_source, exp_hrs
+            ),
+            (true, false) => println!(
+                "[WARN switch] 目标客户端 {} 是 self_managed（含 icube-dc:* 设备密钥），账号 {} 为纯 cookies 来源。注入 GetUserToken JWT（剩余 {}h 过期）后 cloudide 与 icube-dc 将并存。Fix A 已确保 TJ 会维护 cloudide 续签。",
+                crate::trae_app::current().display_name, account.name, exp_hrs
+            ),
+            (false, _) => println!(
+                "[INFO switch] 目标客户端 {} 非 self_managed，将直接注入 cloudide JWT（来源 {}，剩余 {}h 过期）。",
+                crate::trae_app::current().display_name, token_source, exp_hrs
+            ),
+        }
+
         // 构建 Trae IDE 登录信息
         let login_info = crate::machine::TraeLoginInfo {
             token,
-            refresh_token: None, // 如果有 refresh token 可以在这里设置
+            refresh_token: if account.oauth_enabled { account.oauth_refresh_token.clone() } else { None },
             user_id: account.user_id.clone(),
             email: account.email.clone(),
             username: account.name.clone(),
             avatar_url: account.avatar_url.clone(),
-            host: String::new(), // 根据 region 自动选择
+            host: account.oauth_host.clone().unwrap_or_default(),
             region: if account.region.is_empty() { "SG".to_string() } else { account.region.clone() },
+            token_expired_at: account.token_expired_at.clone(),
         };
 
         // 切换 Trae IDE 到该账号（替换登录身份；是否当作全新设备清理本地数据由独立配置决定）
@@ -974,11 +1010,18 @@ impl AccountManager {
         }
     }
 
-    /// 刷新账号 Token
+    /// 刷新账号 Token（TJ 侧独占模式，不回写客户端）
+    ///
+    /// 入口 guard：拒绝对活跃客户端账号执行 cookies 续签，
+    /// 因为 GetUserToken 会使服务端签发新 token 并使旧 token 失效，
+    /// 导致客户端正在使用的 token 被踢掉。
+    ///
+    /// 注意：TJ 注入过的账号应走 refresh_token_and_write_client（续签+回写+kill/relaunch），
+    /// 但 switch_account 切号前会先调本函数"拿有效 token"再自行注入——
+    /// 这种场景是合法的，本函数不拦截 injected 状态。
+    /// refresh_all_tokens 的 step 3 分流逻辑已确保 injected 账号不会误入本函数。
     pub async fn refresh_token(&mut self, account_id: &str) -> Result<()> {
-        // 双重保护：即使调用方漏判，这里也拒绝对活跃客户端账号执行 cookies 续签，
-        // 因为 GetUserToken 会使服务端签发新 token 并使旧 token 失效，
-        // 导致客户端正在使用的 token 被踢掉。
+        // Guard: 客户端原生登录活跃 → 让位避免 GetUserToken 互踢
         if self.is_active_client_account(account_id) {
             let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S");
             println!(
@@ -1050,7 +1093,13 @@ impl AccountManager {
             .clone();
 
         // === OAuth Native 模式：走 ExchangeToken Refresh Flow ===
-        if account.oauth_enabled {
+        // 覆盖两种情况：
+        //  a) oauth_enabled=true（TJ OAuth Native 登录）
+        //  b) has_been_injected + oauth_refresh_token 存在（TJ OAuth 注入后保存了 refresh_token）
+        // ExchangeToken 不废废旧 access_token → 无需 kill+relaunch，客户端无感
+        let has_oauth_refresh = account.oauth_enabled
+            || (account.has_been_injected && account.oauth_refresh_token.is_some());
+        if has_oauth_refresh && account.oauth_refresh_token.is_some() {
             return self.oauth_refresh_and_write_client(account_id, &account).await;
         }
 
@@ -1074,8 +1123,31 @@ impl AccountManager {
             })
             .collect();
 
+        // === cloudide 缺失回退 ===
+        // 正常情况：active_variants 从 read_client_login(cloudide) 匹配。
+        // 异常情况：TJ 注入过的账号 has_been_injected=true，但客户端
+        // clearUserInfo 删除了 cloudide → 所有 read_client_login 返回 Err → active_variants 空。
+        // 此时回退为"写入所有已安装变体"——我们要重新注入 cloudide。
+        let active_variants = if active_variants.is_empty() && account.has_been_injected {
+            let fallback = crate::trae_app::all_variants()
+                .iter()
+                .filter(|v| crate::trae_app::is_variant_installed(v))
+                .cloned()
+                .collect::<Vec<_>>();
+            if !fallback.is_empty() {
+                let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S");
+                println!(
+                    "[{}] [WARN refresh_client] 账号 {} cloudide 票据已被客户端清除，active_variants 空，回退写入所有已安装变体",
+                    now, account.name
+                );
+            }
+            fallback
+        } else {
+            active_variants
+        };
+
         if active_variants.is_empty() {
-            return Err(anyhow!("账号 {} 未在任何客户端活跃", account.name));
+            return Err(anyhow!("账号 {} 未在任何客户端活跃，且未标记为已注入", account.name));
         }
 
         // 续签（直接调用底层 API，跳过活跃账号守卫）
@@ -1117,6 +1189,7 @@ impl AccountManager {
             avatar_url: account.avatar_url.clone(),
             host: String::new(),
             region: if account.region.is_empty() { "SG".to_string() } else { account.region.clone() },
+            token_expired_at: Some(token_result.expired_at.clone()),
         };
         for variant in &active_variants {
             if let Err(e) = crate::machine::write_trae_login_info_for_variant(&login_info, Some(variant)) {
@@ -1129,18 +1202,29 @@ impl AccountManager {
             }
         }
 
-        // 新 token 已写入各客户端 storage.json，客户端下次启动时自动加载。
-        // 注意：这里【不】重启正在运行的客户端——自动续签若强杀重启客户端，
-        // 会中断客户端正在进行的会话（表现为"手动终止"）。
-        // 副作用：运行中的客户端仍持有旧 token（已被 GetUserToken 作废），
-        // 可能在最长 2 小时内弹"登录已失效"，需用户手动重启客户端或重新登录。
-        for v in &active_variants {
-            if crate::machine::is_trae_running_for_variant(v) {
-                println!(
-                    "[INFO refresh_client] {} 正在运行，新 token 已写入 storage.json，将在下次启动时生效",
-                    v.display_name
-                );
+        // GetUserToken 签发新 token 时服务端立即作废旧 token——
+        // 运行中的客户端内存里持有的仍是旧 token，会在下次 API 调用时 401 → clearUserInfo → "登录已失效"。
+        // 因此必须 kill+relaunch 让客户端重新从 storage.json 加载新 token。
+        // 代价是用户正在进行的会话会短暂中断（约 1-2 秒），但远好于硬登出需要重新登录。
+        // 可通过 CheckinConfig.auto_restart_after_refresh + per-account override 关闭。
+        let should_restart = self.should_restart_after_refresh(account_id);
+        if should_restart {
+            use std::time::Duration;
+            for variant in &active_variants {
+                if crate::machine::is_trae_running_for_variant(variant) {
+                    let _ = crate::machine::kill_trae_for_variant(variant);
+                    tokio::time::sleep(Duration::from_millis(800)).await;
+                    let _ = crate::machine::launch_trae_for_variant(variant);
+                    println!(
+                        "[INFO refresh_client] 已重启 {} 加载新 token",
+                        variant.display_name
+                    );
+                }
             }
+        } else {
+            println!(
+                "[INFO refresh_client] 自动重启已关闭，仅 TJ 侧刷新 token（storage.json 已更新）"
+            );
         }
 
         Ok(())
@@ -1215,10 +1299,33 @@ impl AccountManager {
             avatar_url: account.avatar_url.clone(),
             host: token_result.host.clone().unwrap_or_default(),
             region: account.region.clone(),
+            token_expired_at: token_result.expired_at(),
         };
+        let should_restart = self.should_restart_after_refresh(account_id);
         for v in &active_variants {
             let _ = crate::machine::write_trae_login_info_for_variant(&login_info, Some(v));
-            println!("[INFO refresh_client-oauth] 已写入 {} storage.json", v.display_name);
+            println!(
+                "[INFO refresh_client-oauth] 已写入 {} storage.json",
+                v.display_name
+            );
+            if should_restart {
+                // ⚠️ Trae 客户端 verifyStrictTokenInBackground 会对比 storage.json 和内存 token
+                // 不一致 → clearUserInfo 登出！所以需要 kill+relaunch 让客户端加载新 token
+                if crate::machine::is_trae_running_for_variant(v) {
+                    use std::time::Duration;
+                    let _ = crate::machine::kill_trae_for_variant(v);
+                    tokio::time::sleep(Duration::from_millis(800)).await;
+                    let _ = crate::machine::launch_trae_for_variant(v);
+                    println!(
+                        "[INFO refresh_client-oauth] 已重启 {} 加载新 OAuth token",
+                        v.display_name
+                    );
+                }
+            } else {
+                println!(
+                    "[INFO refresh_client-oauth] 自动重启已关闭，仅 TJ 侧刷新 token（verifyStrict 可能检测到不一致登出）"
+                );
+            }
         }
         Ok(())
     }
@@ -1371,13 +1478,40 @@ impl AccountManager {
         self.save_store()
     }
 
-    /// 从 Trae 客户端 storage.json 读取当前登录账号信息。
+    /// 轻量判断目标客户端是否为 self_managed 架构（storage.json 含 icube-dc:* 设备密钥键）。
+    /// 与 read_client_login 不同：本函数不要求客户端有活跃登录态——self_managed 是客户端
+    /// 安装属性，存在即代表客户端版本在 2.3.87413+，具备 OAuth 自管能力。
+    /// storage.json 不存在 / 无 icube-dc 键 → 返回 false（旧版客户端或未安装）。
+    fn is_client_self_managed(&self, variant: Option<&crate::trae_app::TraeAppVariant>) -> bool {
+        #[cfg(any(target_os = "windows", target_os = "macos"))]
+        let trae_data_path = crate::trae_app::data_dir_of(variant.unwrap_or_else(|| crate::trae_app::current()));
+        #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+        let trae_data_path: std::path::PathBuf = return false;
+
+        let storage_path = trae_data_path
+            .join("User")
+            .join("globalStorage")
+            .join("storage.json");
+        let content = match fs::read_to_string(&storage_path) {
+            Ok(c) => c,
+            Err(_) => return false,
+        };
+        let storage: serde_json::Value = match serde_json::from_str(&content) {
+            Ok(v) => v,
+            Err(_) => return false,
+        };
+        storage
+            .as_object()
+            .map(|o| o.keys().any(|k| k.starts_with("iCubeAuthInfo://icube-dc:")))
+            .unwrap_or(false)
+    }
+
+    /// 从 Trae 客户端 storage.json 读取当前登录账号信息（userId + token + self_managed 标志）。
     ///
-    /// 旧版客户端（如 TraeWork CN）在 `iCubeAuthInfo://icube.cloudide` 存完整登录信息（含 token）。
-    /// TraeCode CN 2.3.87416 起移除了该 key（`iCubeAuthInfo://icube-dc:<device_id>` 只存设备 EC 密钥对，
-    /// 不含登录 token），但仍在 `iCubeAuthInfo://usertag` 记录当前登录的 user_id（如 `{"4065351123886410":"cn"}`）。
-    /// 此时仅能识别登录身份（用于活跃账号判定，避免 cookies 续签踢掉客户端），无法同步 token。
-    /// 从指定 Trae 客户端变体的 storage.json 读取当前登录账号信息。
+    /// 旧版客户端在 `iCubeAuthInfo://icube.cloudide` 存完整登录信息（含 token）。
+    /// 新版客户端（2.3.87413+）的 `iCubeAuthInfo://icube-dc:<device_id>` 只存设备 EC 密钥对（不含登录 token），
+    /// 但仍在 `iCubeAuthInfo://usertag` 记录当前登录的 user_id。
+    /// 此时仅能识别登录身份（用于活跃账号判定），无法同步 token。
     ///
     /// 不传 variant 时读取当前目标客户端（`trae_app::current()`），
     /// 传 variant 时读取该指定客户端（用于多客户端活跃检测）。
@@ -1440,10 +1574,24 @@ impl AccountManager {
                     .and_then(|v| v.as_str())
                     .unwrap_or("")
                     .to_string();
+                // OAuth refresh_token：cloudide JSON 中有此字段，
+                // TJ OAuth 注入 / 客户端原生 OAuth 登录都会写入。
+                // 空字符串 → cookies 模式，None → 字段不存在（旧版 cloudide）
+                let refresh_token = auth_info
+                    .get("refreshToken")
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.is_empty())
+                    .map(|s| s.to_string());
+                let refresh_expired_at = auth_info
+                    .get("refreshExpiredAt")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
                 return Ok(ClientLogin {
                     user_id,
                     email,
                     token,
+                    refresh_token,
+                    refresh_expired_at,
                     self_managed,
                 });
             }
@@ -1511,6 +1659,15 @@ impl AccountManager {
                     chrono::DateTime::from_timestamp(exp, 0)
                         .map(|dt| dt.to_rfc3339())
                 });
+
+            let old_exp = self.store.accounts.iter().find(|a| a.id == account_id)
+                .and_then(|a| a.token_expired_at.clone())
+                .unwrap_or_else(|| "None".to_string());
+            println!(
+                "[DEBUG sync] 从客户端同步 token 覆盖账号 {}: token_expired_at {} → {} (parse_jwt_exp={:?})",
+                account_id, old_exp, token_expired_at.as_deref().unwrap_or("None"),
+                crate::api::TraeApiClient::parse_jwt_exp(token).ok()
+            );
 
             // 更新 token 并清除过期标记
             if let Some(acc) = self.store.accounts.iter_mut().find(|a| a.id == account_id) {
@@ -2047,7 +2204,8 @@ impl AccountManager {
         //      背景：TraeJumper 写入客户端的是 8 小时短期 JWT，客户端
         //      `JWT token refresh is disabled` 不会自动刷新，必须由 TraeJumper
         //      在过期前续签并写入，否则客户端会因 token 过期登出。
-        //      续签触发条件：token 2 小时内过期（留出充足时间写入客户端）。
+        //      续签触发条件：token 4 小时内过期（留出充足时间写入客户端，覆盖客户端
+        //      verifyStrictTokenInBackground 每 10min 检查周期）。
         //      注意：这里不用 is_active_client_account_inner（含 1h 死亡检测），
         //      因为 token 过期后正是需要续签+写入的时机。
         for a in &self.store.accounts.clone() {
@@ -2063,31 +2221,33 @@ impl AccountManager {
             if !client_matched || !shared {
                 continue;
             }
-            // 关键：若该账号活跃于任何"新版自管理客户端"（storage 含 icube-dc:* 设备密钥），
-            // 则必须【完全让位】——不得调 GetUserToken、不得写 storage.json 的 icube.cloudide。
+            // === self_managed 客户端让位判定 ===
             //
-            // 新版客户端对自管账号用设备密钥 + OAuth refresh token（有效期长达 1 年）
-            // 自行签发登录态，整个票据生命周期独立维护。TJ 注入的 GetUserToken JWT
-            // （source=session，8h 有效期）与客户端 OAuth refresh 签发的 JWT
-            // （source=refresh_token，15d 有效期）是两套独立票据体系，
-            // 写入 icube.cloudide 虽然不会直接作废客户端 OAuth token
-            // （客户端有 icube-dc 设备密钥对恢复能力），
-            // 但 TJ 不应插手 self_managed 客户端的 token 生命周期——
-            // 客户端自管时有 1 年有效期的 refresh token 完全不需要 TJ 介入。
+            // 新版客户端（storage 含 icube-dc:* 设备密钥）对"纯原生 OAuth 登录"的账号
+            // （source=refresh_token，15d 有效期）自行维护完整票据生命周期，TJ 不应插手。
             //
-            // 历史方案（2026-10-09）曾对"TJ 注入 + 有 cookies"的账号开例外，
-            // 但 2026-10-14 诊断证实：当用户先在客户端原生 OAuth 登录、
-            // 后通过 TJ 导入同一账号 token + cookies 时，会造成
-            // self_managed + injected_with_cookies 的矛盾组合，TJ 误以为应该介入续签，
-            // 但客户端实际上一直在靠自己的 icube-dc 设备密钥对维护登录态。
-            // 修复：self_managed 客户端活跃 → 一律让位，彻底消除边界隐患。
+            // 但存在一个关键矛盾场景：TJ 已通过 switch_account 把 GetUserToken 的 8h
+            // JWT 写入了 icube.cloudide（token_shared_with_client=true），与此同时客户端
+            // storage 仍有 icube-dc:* 设备密钥 → self_managed=true。此时若一刀切让位，
+            // TJ 注入的 cloudide token 将再也没人续签 → 自然过期 → 客户端 verifyStrictTokenInBackground
+            // 校验 cloudide 过期 → clearUserInfo 登出（实测 2026-10-17 Ye 账号正是因此登出）。
+            //
+            // 因此让位规则修正为：
+            //   self_managed_active && !token_shared_with_client → 让位（纯自管，TJ 未注入）
+            //   self_managed_active && token_shared_with_client  → 不让位！TJ 必须续+写，
+            //     维持自己注入的 cloudide token 不死
+            //
+            // 非 self_managed 客户端：正常走续+写（不受此分支影响）。
             let self_managed_active = active_client_logins
                 .iter()
                 .any(|l| l.self_managed && l.user_id == a.user_id);
-            if self_managed_active {
+            let should_yield_to_self_managed = self_managed_active && !shared;
+            if should_yield_to_self_managed {
                 continue;
             }
-            let expiring_soon = Self::is_token_expiring_within_hours(a, 2);
+            // 宽限期扩大到 4h：给 self_managed 客户端 verifyStrictTokenInBackground
+            // （每 10min 检查）足够缓冲，避免 cloudide 因过期被客户端清掉
+            let expiring_soon = Self::is_token_expiring_within_hours(a, 4);
             if !expiring_soon {
                 continue;
             }
@@ -2120,7 +2280,7 @@ impl AccountManager {
         //       防止服务端因长时间无请求而清理 session（session 一旦被清理，
         //       token 到期时就无法续签了）
         let now = chrono::Utc::now().timestamp();
-        let mut candidates: Vec<(String, String, bool, bool, usize)> = Vec::new();
+        let mut candidates: Vec<(String, String, bool, bool, usize, bool, bool)> = Vec::new();
         let mut skipped_logs: Vec<String> = Vec::new();
         for a in &self.store.accounts {
             let has_cookies = !a.cookies.is_empty();
@@ -2138,13 +2298,39 @@ impl AccountManager {
                 .iter()
                 .any(|l| l.user_id == a.user_id);
 
-            if is_active_client {
-                // 客户端活跃中，让位不 cookies 续签（避免踢掉客户端 token）
+            // === 让位逻辑关键修正 ===
+            // 只有"客户端独立登录"(!has_been_injected && !shared) 时才让位。
+            // TJ 注入过的账号(has_been_injected=true || shared=true)，不论客户端
+            // 当前是否活跃，都不应跳过——TJ 必须对它在客户端的整个生命周期
+            // 负全责：到期续签 + 回写客户端 + 被清除后重注入。
+            let injected = a.has_been_injected || a.token_shared_with_client;
+            if is_active_client && !injected {
+                // 客户端原生 OAuth 登录的账号，让位避免 GetUserToken 互踢
                 skipped_logs.push(format!(
-                    "    {}({}) → 跳过：客户端活跃中（让位避免互踢）",
+                    "    {}({}) → 跳过：客户端原生登录活跃中（让位避免互踢）",
                     a.name, a.id
                 ));
                 continue;
+            }
+
+            // === cloudide 缺失自动重注入 ===
+            // TJ 注入过的账号，如果**所有已安装变体的 cloudide 都被清除**
+            // （clearUserInfo 清空 / 首次启动未注入），立即加入候选——
+            // 不等 expiring_soon，直接 refresh + write + kill/relaunch。
+            //
+            // 注意：只在 active_client_logins 完全为空时触发——说明所有变体的
+            // read_client_login 都失败或 userId 为空（被 clearUserInfo 清空）。
+            // 如果至少有一个变体有 cloudide（不管是谁的 userId），说明客户端
+            // 正常持有某个账号的会话，inject 但 userId 不匹配是"正常切号后
+            // 旧账号不在客户端活跃"的状态，不应强制覆盖。
+            let all_variants_cloudide_gone = active_client_logins.is_empty();
+            let no_variant_has_cloudide = injected && all_variants_cloudide_gone;
+            if no_variant_has_cloudide {
+                let now_ts = chrono::Local::now().format("%Y-%m-%d %H:%M:%S");
+                println!(
+                    "[{}] [WARN refresh] 已注入账号 {}({}) 所有已安装变体均无 cloudide 票据（可能被 clearUserInfo 清空），自动重注入",
+                    now_ts, a.name, a.id
+                );
             }
 
             let already_expired = a
@@ -2158,8 +2344,10 @@ impl AccountManager {
             let stale_session = now - last_renewal > 12 * 3600; // 12 小时未续签
             let cookie_count = a.cookies.split(';').filter(|c| !c.trim().is_empty()).count();
 
-            if expiring_soon || stale_session || already_expired {
-                candidates.push((a.id.clone(), a.name.clone(), expiring_soon, stale_session, cookie_count));
+            // 候选条件：过期/临期/session 过期/已注入但无任何变体有 cloudide(强制重注入)
+            let needs_renewal = expiring_soon || stale_session || already_expired || no_variant_has_cloudide;
+            if needs_renewal {
+                candidates.push((a.id.clone(), a.name.clone(), expiring_soon, stale_session, cookie_count, injected, no_variant_has_cloudide));
             } else {
                 // 暂不需要续签的账号也记一下，方便确认状态
                 let remaining_hrs = a.token_expired_at
@@ -2187,49 +2375,87 @@ impl AccountManager {
                 println!("{}", line);
             }
         }
-        for (id, name, expiring_soon, stale_session, cookie_count) in &candidates {
+        for (id, name, expiring_soon, stale_session, cookie_count, injected, cloudide_gone) in &candidates {
             let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S");
             let reasons = [
                 if *expiring_soon { Some("1h内过期") } else { None },
                 if *stale_session { Some("session超12h") } else { None },
-                if !*expiring_soon && !*stale_session { Some("已过期重试") } else { None },
+                if *cloudide_gone { Some("cloudide被清除→重注入") } else { None },
+                if !*expiring_soon && !*stale_session && !*cloudide_gone { Some("已过期重试") } else { None },
             ]
             .into_iter()
             .flatten()
             .collect::<Vec<_>>()
             .join("+");
+            let action = if *injected { "续签+回写客户端" } else { "仅TJ侧续签" };
             println!(
-                "[{}] [INFO refresh] 开始续签 {}({}) cookies={} 原因: {}",
-                now, name, id, cookie_count, reasons
+                "[{}] [INFO refresh] 开始续签 {}({}) cookies={} 原因: {} [{}]",
+                now, name, id, cookie_count, reasons, action
             );
         }
 
-        for (id, name, _, _, _) in candidates {
-            match self.refresh_token(&id).await {
-                Ok(_) => {
-                    let now2 = chrono::Local::now().format("%Y-%m-%d %H:%M:%S");
-                    refreshed.push(id);
+        // === 核心分流：注入过的账号必须 refresh_token_and_write_client() ===
+        // 只调 refresh_token() 会：①GetUserToken 作废客户端现有 token(死票) ②shared=false
+        for (id, name, _, _, _, injected, _) in candidates {
+            if injected {
+                // TJ 注入过的账号：续签 + 写回客户端 + kill/relaunch 让客户端重新读取
+                match self.refresh_token_and_write_client(&id).await {
+                    Ok(_) => {
+                        let now2 = chrono::Local::now().format("%Y-%m-%d %H:%M:%S");
+                        refreshed.push(id);
+                    }
+                    Err(e) => {
+                        let now2 = chrono::Local::now().format("%Y-%m-%d %H:%M:%S");
+                        eprintln!("[{}] [WARN] 续签+回写客户端失败 {}({}): {}", now2, name, id, e);
+                    }
                 }
-                Err(e) => {
-                    let now2 = chrono::Local::now().format("%Y-%m-%d %H:%M:%S");
-                    eprintln!("[{}] [WARN] 自动刷新 Token 失败 {}({}): {}", now2, name, id, e);
+            } else {
+                // 未注入过的账号：TJ 侧独占续签即可
+                match self.refresh_token(&id).await {
+                    Ok(_) => {
+                        let now2 = chrono::Local::now().format("%Y-%m-%d %H:%M:%S");
+                        refreshed.push(id);
+                    }
+                    Err(e) => {
+                        let now2 = chrono::Local::now().format("%Y-%m-%d %H:%M:%S");
+                        eprintln!("[{}] [WARN] 自动刷新 Token 失败 {}({}): {}", now2, name, id, e);
+                    }
                 }
             }
         }
 
         // 4) OAuth Native 模式账号：用 ExchangeToken(Refresh Flow) 续签
         //    与 cookies 模式完全独立——OAuth 账号没有 cookies，不会被上面的逻辑覆盖到。
-        //    触发条件：oauth_enabled=true + refresh_token 存在 + access_token 2h 内过期。
-        //    OAuth 续签不会作废客户端原生 token（不同票据体系），无需让位。
+        //    触发条件（任一满足即续签）：
+        //      a) oauth_enabled + access_token 2h 内过期
+        //      b) oauth_enabled + refresh_token 7 天内过期（轮换，防止自然过期）
+        //    ExchangeToken 不作废旧 access_token → 客户端无感，无需 kill+relaunch。
         let current_variant = crate::trae_app::current();
-        // 先 collect：避免与 self.store.accounts 的 mutable 借用冲突
         let oauth_account_ids: Vec<String> = self.store.accounts.iter()
             .filter(|a| {
-                a.oauth_enabled
-                    && a.oauth_refresh_token.is_some()
-                    && a.oauth_private_key_pem.is_some()
-                    && a.oauth_public_key_pem.is_some()
-                    && Self::is_token_expiring_within_hours(a, 2)
+                if !a.oauth_enabled || a.oauth_refresh_token.is_none()
+                    || a.oauth_private_key_pem.is_none() || a.oauth_public_key_pem.is_none()
+                {
+                    return false;
+                }
+                // 条件 a: access_token 即将过期（2h 内）
+                let exp = a.token_expired_at.as_deref().unwrap_or("None");
+                let will_expire = Self::is_token_expiring_within_hours(a, 2);
+                println!(
+                    "[DEBUG step4] OAuth 账号 {} token_expired_at={} will_expire_2h={}",
+                    a.name, exp, will_expire
+                );
+                if will_expire { return true; }
+                // 条件 b: refresh_token 即将过期（7 天内，轮换）
+                if let Some(exp) = &a.oauth_refresh_expired_at {
+                    if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(exp) {
+                        // FixedOffset → Utc 才能和 chrono::Utc::now() 相减
+                        let dt_utc = dt.with_timezone(&chrono::Utc);
+                        let days_left = (dt_utc - chrono::Utc::now()).num_days();
+                        if days_left <= 7 { return true; }
+                    }
+                }
+                false
             })
             .map(|a| a.id.clone())
             .collect();
@@ -2311,17 +2537,30 @@ impl AccountManager {
                             avatar_url: account_snapshot.avatar_url.clone(),
                             host: token_result.host.clone().unwrap_or_default(),
                             region: account_snapshot.region.clone(),
+                            token_expired_at: token_result.expired_at(),
                         };
                         for variant in &active_variants {
                             match crate::machine::write_trae_login_info_for_variant(&login_info, Some(variant)) {
                                 Ok(_) => {
-                                    println!(
-                                        "[INFO refresh-oauth] token 写回 {}",
-                                        variant.display_name
-                                    );
-                                    let _ = crate::machine::kill_trae_for_variant(variant);
-                                    tokio::time::sleep(std::time::Duration::from_millis(800)).await;
-                                    let _ = crate::machine::launch_trae_for_variant(variant);
+                                    let should_restart = self.should_restart_after_refresh(&account_snapshot.id);
+                                    if should_restart {
+                                        // ⚠️ verifyStrictTokenInBackground 会对比 storage.json 和客户端内存的 token
+                                        // 不一致 → clearUserInfo 登出！
+                                        if crate::machine::is_trae_running_for_variant(variant) {
+                                            use std::time::Duration;
+                                            let _ = crate::machine::kill_trae_for_variant(variant);
+                                            tokio::time::sleep(Duration::from_millis(800)).await;
+                                            let _ = crate::machine::launch_trae_for_variant(variant);
+                                            println!(
+                                                "[INFO refresh-oauth] 已重启 {} 加载新 OAuth token",
+                                                variant.display_name
+                                            );
+                                        }
+                                    } else {
+                                        println!(
+                                            "[INFO refresh-oauth] 自动重启已关闭，仅 TJ 侧刷新 token"
+                                        );
+                                    }
                                 }
                                 Err(e) => println!(
                                     "[WARN refresh-oauth] 写回 {} 失败: {}",
@@ -2479,6 +2718,31 @@ impl AccountManager {
         self.store.checkin_config = Some(config);
         self.save_store()?;
         Ok(())
+    }
+
+    /// 设置 per-account 重启覆盖开关
+    /// None = 跟随总开关；Some(true/false) = 强制开/关
+    pub fn set_account_restart_override(&mut self, account_id: &str, enabled: Option<bool>) -> Result<()> {
+        let acc = self.store.accounts.iter_mut()
+            .find(|a| a.id == account_id)
+            .ok_or_else(|| anyhow!("账号不存在: {}", account_id))?;
+        acc.restart_after_refresh_override = enabled;
+        self.save_store()?;
+        Ok(())
+    }
+
+    /// 判断某账号自动续签后是否应重启客户端（总开关 + per-account 覆盖）
+    pub fn should_restart_after_refresh(&self, account_id: &str) -> bool {
+        let global = self.store.checkin_config.as_ref()
+            .map(|c| c.auto_restart_after_refresh)
+            .unwrap_or(true);
+        let per_account = self.store.accounts.iter()
+            .find(|a| a.id == account_id)
+            .and_then(|a| a.restart_after_refresh_override);
+        match per_account {
+            Some(v) => v,    // per-account 覆盖优先
+            None => global,  // 跟随总开关
+        }
     }
 
     /// 获取「切换账号当作新设备」开关状态

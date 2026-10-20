@@ -727,6 +727,29 @@ body {
   cursor: not-allowed;
 }
 
+/* 覆盖全局 .loading 遮罩类对按钮的污染 */
+.batch-btn.loading {
+  display: inline-flex;
+  flex-direction: row;
+  align-items: center;
+  justify-content: center;
+  padding: 8px 16px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
+  width: auto;
+  height: auto;
+  box-sizing: border-box;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  border-radius: var(--radius);
+  box-shadow: none;
+  animation: none;
+}
+.batch-btn.loading svg {
+  animation: spin 1s linear infinite;
+}
+
 /* View Toggle - 视图切换 */
 .view-toggle {
   display: flex;
@@ -2645,6 +2668,93 @@ body {
   border-bottom: none;
 }
 
+/* 垂直布局的 detail-row（标签在上、控件在下，不会互相挤压） */
+.detail-row-vertical {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.detail-row-vertical .detail-label {
+  min-width: auto;
+  width: 100%;
+}
+
+.detail-row-vertical .restart-override-group {
+  flex-shrink: 0;
+}
+
+/* 续签重启策略三态按钮组 */
+.restart-override-group {
+  display: inline-flex;
+  align-items: stretch;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.restart-override-btn {
+  padding: 6px 14px;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  transition: background 0.15s, color 0.15s;
+  border-right: 1px solid var(--border);
+  white-space: nowrap;
+}
+
+.restart-override-btn:last-child {
+  border-right: none;
+}
+
+.restart-override-btn:hover:not(.active):not(:disabled) {
+  background: var(--bg-primary);
+  color: var(--text-secondary);
+}
+
+.restart-override-btn.active {
+  background: var(--accent-color, #1b8fff);
+  color: #fff;
+}
+
+.restart-override-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.restart-override-btn.active:disabled {
+  opacity: 0.85;
+}
+
+/* saving 态：按钮组整体有"正在保存"的视觉反馈 */
+.restart-override-btn.saving:not(.active) {
+  opacity: 0.35;
+  pointer-events: none;
+}
+
+/* spinner 动画 */
+.restart-override-spinner {
+  animation: restart-spin 0.8s linear infinite;
+}
+
+@keyframes restart-spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+.restart-override-hint {
+  font-size: 11px;
+  font-weight: 400;
+  opacity: 0.8;
+}
+
 .detail-row-copy {
   display: flex;
   flex-direction: column;
@@ -4224,6 +4334,40 @@ body {
 
 .setting-item.danger .setting-label {
   color: var(--danger);
+}
+
+/* 设置分组卡片（续签配置等） */
+.setting-group-card {
+  background: linear-gradient(135deg, rgba(14, 165, 233, 0.05) 0%, rgba(6, 182, 212, 0.03) 100%);
+  border: 1px solid rgba(14, 165, 233, 0.12);
+  border-radius: 12px;
+  padding: 16px 20px;
+  margin: 16px 0;
+}
+
+.setting-group-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-bottom: 4px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.setting-group-title svg {
+  color: var(--accent-color, #1b8fff);
+}
+
+.setting-item-group .setting-item {
+  border-bottom: 1px dashed var(--border);
+  padding: 14px 0;
+}
+
+.setting-item-group .setting-item:last-child {
+  border-bottom: none;
 }
 
 /* Machine ID Card */

@@ -1,4 +1,4 @@
-import type { CheckinStatusResult, CreditSummary, UsageSummary } from "../types";
+import type { CheckinConfig, CheckinStatusResult, CreditSummary, UsageSummary } from "../types";
 
 interface AccountListItemProps {
   account: {
@@ -18,6 +18,8 @@ interface AccountListItemProps {
     login_source?: string;
     login_type?: string;
     checkin_status?: CheckinStatusResult;
+    /** per-account 自动续签后重启客户端覆盖开关 */
+    restart_after_refresh_override?: boolean | null;
   };
   usage: UsageSummary | null;
   credits: CreditSummary | null;
@@ -30,6 +32,8 @@ interface AccountListItemProps {
   refreshing?: boolean;
   onRenewClient?: (id: string) => void;
   renewingClient?: boolean;
+  /** 全局签到配置（用于 per-account override=null 时推导实际值） */
+  checkinConfig?: CheckinConfig | null;
 }
 
 // 登录来源展示名（始终显示在 Trae 账号旁边，不参与 Token 让位推导）
@@ -59,7 +63,7 @@ function sourceTagClass(): string {
   return "login-source-tag";
 }
 
-export function AccountListItem({ account, usage, credits, creditsLoading, selected, onSelect, onContextMenu, onViewDetail, onRefresh, refreshing, onRenewClient, renewingClient }: AccountListItemProps) {
+export function AccountListItem({ account, usage, credits, creditsLoading, selected, onSelect, onContextMenu, onViewDetail, onRefresh, refreshing, onRenewClient, renewingClient, checkinConfig }: AccountListItemProps) {
   const isCredits = !!credits?.is_credits_billing;
 
   // 将客户端显示名映射为短标签
@@ -70,10 +74,13 @@ export function AccountListItem({ account, usage, credits, creditsLoading, selec
     return name;
   };
   const activeClients = (account.active_in_clients || []).map(shortClientName);
-  // "当前"标签：客户端显示名 + 激活类型（例如 "TRAE CN 当前 · 客户端 OAuth"）
+  // 激活标签：客户端显示名 · 注入方式（例如 "TRAE CN · 客户端 OAuth"）
   const activationLabelText = activationLabel(account.login_type);
+  // 续签重启策略 effective 值：override=null 时跟随全局
+  const effectiveRestart = account.restart_after_refresh_override ?? checkinConfig?.auto_restart_after_refresh ?? true;
+  const restartLabel = activeClients.length > 0 ? (effectiveRestart ? "重启" : "不重启") : "";
   const currentTagText = activeClients.length > 0
-    ? `${activeClients.join(" & ")} 当前${activationLabelText ? ` · ${activationLabelText}` : ""}`
+    ? `${activeClients.join(" & ")}${activationLabelText ? ` · ${activationLabelText}` : ""}${restartLabel ? ` · ${restartLabel}` : ""}`
     : "";
 
   const formatCredits = (v: number) => {
@@ -165,7 +172,6 @@ export function AccountListItem({ account, usage, credits, creditsLoading, selec
           {displayName}
           {currentTagText && tokenStatus !== "expired" && (
             <span className="current-tag-inline" title={activeClients.join("、")}>
-              <span className="current-tag-check">✓</span>
               {currentTagText}
             </span>
           )}
@@ -238,10 +244,11 @@ export function AccountListItem({ account, usage, credits, creditsLoading, selec
       </div>
 
       <div className="list-item-actions">
-        {onRefresh && account.has_cookies && !account.is_client_active && (
+        {/* 续签按钮：cookies 模式或 OAuth 模式都可 */}
+        {onRefresh && (account.has_cookies || account.oauth_enabled) && !account.is_client_active && (
           <button
             className={`action-btn refresh-btn-list ${refreshing ? "loading" : ""}`}
-            title="手动续签 Token"
+            title={account.oauth_enabled ? "手动续签 Token（ExchangeToken Refresh Flow）" : "手动续签 Token（GetUserToken via cookies）"}
             onClick={(e) => { e.stopPropagation(); onRefresh(account.id); }}
             disabled={refreshing}
           >
@@ -252,10 +259,11 @@ export function AccountListItem({ account, usage, credits, creditsLoading, selec
             </svg>
           </button>
         )}
-        {onRenewClient && account.is_client_active && account.has_cookies && (
+        {/* 写回客户端按钮：两种模式服务端都会作废旧 access_token → 都需要重启客户端加载新 token */}
+        {onRenewClient && account.is_client_active && (account.has_cookies || account.oauth_enabled) && (
           <button
             className={`action-btn ${renewingClient ? "loading" : ""}`}
-            title="续签并写回客户端（手动测试：立即 GetUserToken 续签并写入客户端存储）"
+            title="续签并写回客户端（服务端作废旧 token，需重启客户端加载新 token）"
             onClick={(e) => { e.stopPropagation(); onRenewClient(account.id); }}
             disabled={renewingClient}
           >
