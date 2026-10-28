@@ -462,17 +462,32 @@ impl AccountManager {
             token_expired_at: account.token_expired_at.clone(),
         };
 
-        // 切换 Trae IDE 到该账号（替换登录身份；是否当作全新设备清理本地数据由独立配置决定）
+        // 切换 Trae IDE 到该账号 + 设置系统机器码 — 这些全是同步阻塞操作（含 kill_trae 多轮 sleep），
+        // 包进 spawn_blocking 防止阻塞 tokio worker 导致 TJ UI 卡死（用户体感 "崩了"）
         let clean_client_data = self.store.switch_as_new_device;
-        crate::machine::switch_trae_account(&login_info, account.machine_id.as_deref(), clean_client_data)?;
-
-        // 如果账号有绑定的机器码，也更新系统机器码
-        if let Some(machine_id) = &account.machine_id {
-            match crate::machine::set_machine_guid(machine_id) {
-                Ok(_) => println!("[INFO] 已切换系统机器码: {}", machine_id),
-                Err(e) => println!("[WARN] 切换系统机器码失败（可能需要管理员权限）: {}", e),
+        let login_info_for_blocking = login_info.clone();
+        let machine_id_clone = account.machine_id.clone();
+        println!("[DEBUG-crash] switch_account: 准备 spawn_blocking (kill+write+launch)");
+        let spawn_blocking_result: std::result::Result<(), anyhow::Error> = tokio::task::spawn_blocking(move || -> std::result::Result<(), anyhow::Error> {
+            println!("[DEBUG-crash] spawn_blocking: 进入, 开始 switch_trae_account");
+            crate::machine::switch_trae_account(
+                &login_info_for_blocking,
+                machine_id_clone.as_deref(),
+                clean_client_data,
+            )?;
+            println!("[DEBUG-crash] spawn_blocking: switch_trae_account 完成, 开始 set_machine_guid");
+            if let Some(mid) = &machine_id_clone {
+                match crate::machine::set_machine_guid(mid) {
+                    Ok(_) => println!("[INFO] 已切换系统机器码: {}", mid),
+                    Err(e) => println!("[WARN] 切换系统机器码失败（可能需要管理员权限）: {}", e),
+                }
             }
-        }
+            println!("[DEBUG-crash] spawn_blocking: 全部完成");
+            Ok(())
+        })
+        .await
+        .map_err(|e| anyhow!("阻塞任务被取消: {}", e))?;
+        spawn_blocking_result?;
 
         // 设置活跃账号和当前使用的账号
         self.store.active_account_id = Some(account_id.to_string());

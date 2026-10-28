@@ -621,6 +621,104 @@ fn init_logging() {
     // 注意：file 必须 leak，否则 drop 后 fd 关闭，后续 println 会失败
     std::mem::forget(file);
 
+    // —— 关键：注册 panic hook，把 Rust panic 打到日志文件里 ——
+    // Rust panic 默认走 stderr（已重定向到日志），但 panic hook 能额外输出更清晰的标记
+    std::panic::set_hook(Box::new(|info| {
+        let thread = std::thread::current();
+        let thread_name = thread.name().unwrap_or("<unnamed>");
+        let location = info.location()
+            .map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column()))
+            .unwrap_or_else(|| "<unknown>".to_string());
+        let payload = if let Some(s) = info.payload().downcast_ref::<&str>() {
+            (*s).to_string()
+        } else if let Some(s) = info.payload().downcast_ref::<String>() {
+            s.clone()
+        } else {
+            "(non-string payload)".to_string()
+        };
+        // 同步到 stderr（已重定向到日志文件），eprintln! 比 println! 更可靠
+        eprintln!(
+            "\n[DEBUG-crash] ========== PANIC ==========\n[DEBUG-crash] thread: {}\n[DEBUG-crash] location: {}\n[DEBUG-crash] payload: {}\n[DEBUG-crash] ========================\n",
+            thread_name, location, payload
+        );
+    }));
+    // 强制启用 backtrace（如果环境变量没设）
+    if std::env::var_os("RUST_BACKTRACE").is_none() {
+        std::env::set_var("RUST_BACKTRACE", "1");
+    }
+
+    // —— 关键：Windows SEH（结构化异常处理）捕获 ACCESS_VIOLATION 等 segfault ——
+    // panic hook 只能抓 Rust panic，抓不到 Windows 级的内存访问违规（ACCESS_VIOLATION / 0xC0000005），
+    // 后者才是 TJ "silent crash" 的真正元凶（之前 10+ 个 PID 全是这种情况）。
+    // AddVectoredExceptionHandler 在异常分发链的最顶层拦截，能捕获所有进程内的致命异常。
+    #[cfg(target_os = "windows")]
+    {
+        unsafe {
+            register_seh_handler();
+        }
+    }
+
+    // —— Heartbeat 线程：每 5s 打一条 alive 标记到日志 ——
+    let my_pid = std::process::id();
+    std::thread::spawn(move || {
+        let mut count: u64 = 0;
+        loop {
+            std::thread::sleep(std::time::Duration::from_secs(5));
+            count += 1;
+            let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S");
+            eprintln!("[DEBUG-heartbeat] alive PID={} #{} at {}", my_pid, count, now);
+        }
+    });
+
+    // —— Exit-code watchdog：等进程退出后记录 exit code ——
+    // 终极探针：definitive 分辨 "自杀" (exit 自己调的) vs "谋杀" (外部 TerminateProcess)。
+    // Exit code 0 = 正常 exit；Exit code 1 = TerminateProcess 默认值；
+    // 0xC000013A = Ctrl+C；其他 = abort() / 异常退出。
+    #[cfg(target_os = "windows")]
+    std::thread::spawn(move || {
+        use windows_sys::Win32::Foundation::{CloseHandle, WAIT_OBJECT_0};
+        use windows_sys::Win32::System::Threading::{
+            GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+        };
+        unsafe {
+            let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, my_pid);
+            if handle.is_null() {
+                let err = windows_sys::Win32::Foundation::GetLastError();
+                eprintln!("[DEBUG-watchdog] OpenProcess 失败 err={}", err);
+                return;
+            }
+            // INFINITE 等待进程结束
+            let wait_result = windows_sys::Win32::System::Threading::WaitForSingleObject(
+                handle, 0xFFFFFFFF, // INFINITE
+            );
+            if wait_result == WAIT_OBJECT_0 {
+                let mut exit_code: u32 = 0;
+                if GetExitCodeProcess(handle, &mut exit_code) != 0 {
+                    eprintln!(
+                        "\n[DEBUG-watchdog] ========== PROCESS EXITED ==========\n\
+                         [DEBUG-watchdog] PID={} exit_code=0x{:08X} ({})\n\
+                         [DEBUG-watchdog] ==================================\n",
+                        my_pid, exit_code,
+                        match exit_code {
+                            0 => "EXIT_SUCCESS (正常 exit / app.exit(0))",
+                            1 => "EXIT_FAILURE (TerminateProcess 默认值 = 外部谋杀!)",
+                            0xC000013A => "STATUS_CONTROL_C_EXIT (Ctrl+C)",
+                            0xC0000005 => "EXCEPTION_ACCESS_VIOLATION (segfault)",
+                            0xC00000FD => "EXCEPTION_STACK_OVERFLOW",
+                            0xC0000409 => "STATUS_STACK_BUFFER_OVERRUN",
+                            other => "未知",
+                        }
+                    );
+                } else {
+                    eprintln!("[DEBUG-watchdog] GetExitCodeProcess 失败");
+                }
+            } else {
+                eprintln!("[DEBUG-watchdog] WaitForSingleObject 失败");
+            }
+            CloseHandle(handle);
+        }
+    });
+
     println!(
         "\n========== Trae Jumper 启动 {} (PID {}) ==========",
         chrono::Local::now().format("%Y-%m-%d %H:%M:%S"),
@@ -908,22 +1006,38 @@ pub fn run() {
                 }
                 let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
                 interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+                let mut tick_counter: u64 = 0;
                 loop {
                     interval.tick().await;
+                    tick_counter += 1;
+                    let tick_now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S");
+                    eprintln!("[DEBUG-tick] interval tick #{} at {}", tick_counter, tick_now);
                     let mut manager = account_manager.lock().await;
                     if manager.get_checkin_config().auto_renew_enabled {
                         match manager.refresh_all_tokens().await {
                             Ok(refreshed) if !refreshed.is_empty() => {
+                                eprintln!("[DEBUG-tick] refresh_all_tokens 返回 {} 个更新", refreshed.len());
                                 let _ = app_handle.emit("token-refreshed", refreshed);
                             }
                             Ok(_) => {}
-                            Err(e) => eprintln!("[WARN] 定时续签失败: {}", e),
+                            Err(e) => {
+                                eprintln!("[DEBUG-tick] refresh_all_tokens error: {}", e);
+                                eprintln!("[WARN] 定时续签失败: {}", e);
+                            }
                         }
+                    } else {
+                        eprintln!("[DEBUG-tick] auto_renew_enabled=false, 跳过 refresh_all_tokens");
                     }
                     // 自动签到：内部会判断 auto_checkin_enabled 开关与时间，不满足条件时立即返回
-                    if let Err(e) = manager.auto_checkin().await {
-                        eprintln!("[WARN] 自动签到失败: {}", e);
+                    eprintln!("[DEBUG-tick] 即将调用 auto_checkin...");
+                    match manager.auto_checkin().await {
+                        Ok(n) => eprintln!("[DEBUG-tick] auto_checkin 返回 {} 个签到", n),
+                        Err(e) => {
+                            eprintln!("[DEBUG-tick] auto_checkin error: {}", e);
+                            eprintln!("[WARN] 自动签到失败: {}", e);
+                        }
                     }
+                    eprintln!("[DEBUG-tick] interval tick #{} 完成", tick_counter);
                 }
             });
 
@@ -1011,4 +1125,119 @@ fn setup_system_tray(app: &tauri::App) -> std::result::Result<(), Box<dyn std::e
         .build(app)?;
 
     Ok(())
+}
+
+// =============================================================================
+// Windows SEH 异常捕获 —— 抓 ACCESS_VIOLATION (0xC0000005) 等 segfault
+// =============================================================================
+
+#[cfg(target_os = "windows")]
+unsafe fn register_seh_handler() {
+    use windows_sys::Win32::System::Diagnostics::Debug::{
+        AddVectoredExceptionHandler, EXCEPTION_POINTERS,
+    };
+
+    // 静态存储 handler 注册句柄，防止被过早注销（进程退出时 OS 会自动清理）
+    static mut SEH_HANDLE: *mut std::ffi::c_void = std::ptr::null_mut();
+
+    unsafe extern "system" fn seh_handler(p_exception_pointers: *mut EXCEPTION_POINTERS) -> i32 {
+        // EXCEPTION_CONTINUE_SEARCH = 0，让异常继续传播（我们只记录，不吞异常）
+        // 但先尝试把异常信息写到日志——这是崩溃前最后的呼救
+        if p_exception_pointers.is_null() {
+            return 0;
+        }
+        let ep = &*p_exception_pointers;
+        if ep.ExceptionRecord.is_null() {
+            return 0;
+        }
+        let record = &*ep.ExceptionRecord;
+        let code = record.ExceptionCode;
+        // 只对关键致命异常记录，避免对正常异常（如栈展开里的 raise）误报
+        // NTSTATUS 高位为 1 表示错误，i32 模式下是负数
+        const ACCESS_VIOLATION: i32 = 0xC0000005u32 as i32;
+        const STACK_OVERFLOW: i32 = 0xC00000FDu32 as i32;
+        const BUFFER_OVERRUN: i32 = 0xC0000409u32 as i32;
+        const ILLEGAL_INSTRUCTION: i32 = 0xC000001Du32 as i32;
+        const NONCONTINUABLE: i32 = 0xC0000025u32 as i32;
+        const GUARD_PAGE: i32 = 0xC00004A3u32 as i32;
+        let is_fatal = matches!(
+            code,
+            ACCESS_VIOLATION
+            | STACK_OVERFLOW
+            | BUFFER_OVERRUN
+            | ILLEGAL_INSTRUCTION
+            | NONCONTINUABLE
+            | GUARD_PAGE
+        );
+        if !is_fatal {
+            return 0; // 非致命异常，不输出
+        }
+
+        // 异常代码 → 人类可读名称
+        let code_name = match code {
+            ACCESS_VIOLATION => "EXCEPTION_ACCESS_VIOLATION",
+            STACK_OVERFLOW => "EXCEPTION_STACK_OVERFLOW",
+            BUFFER_OVERRUN => "STATUS_STACK_BUFFER_OVERRUN",
+            ILLEGAL_INSTRUCTION => "EXCEPTION_ILLEGAL_INSTRUCTION",
+            NONCONTINUABLE => "EXCEPTION_NONCONTINUABLE_EXCEPTION",
+            GUARD_PAGE => "STATUS_CONTROL_GUARD_PAGE_VIOLATION",
+            other => {
+                Box::leak(format!("EXCEPTION_CODE_0x{:08X}", other as u32).into_boxed_str())
+            }
+        };
+
+        // ACCESS_VIOLATION 的 ExceptionInformation[0] 是读写类型（0=读,1=写,8=执行）
+        // ExceptionInformation[1] 是触发访问违规的目标地址
+        let access_desc = if code == ACCESS_VIOLATION {
+            let access_type = record.ExceptionInformation[0];
+            let fault_addr = record.ExceptionInformation[1];
+            let at = match access_type {
+                0 => "READ",
+                1 => "WRITE",
+                8 => "EXECUTE",
+                _ => "UNKNOWN",
+            };
+            format!(", access_type={}, fault_address=0x{:X}", at, fault_addr)
+        } else {
+            String::new()
+        };
+
+        let thread = std::thread::current();
+        let thread_name = thread.name().unwrap_or("<unnamed>");
+
+        // 用 raw Write 写 stderr（已重定向到日志文件），比 println!/eprintln! 更底层可靠
+        // 因为此时堆可能已损坏，eprintln! 内部可能触发新的 panic/segfault
+        let msg = format!(
+            "\n[DEBUG-crash] ========== SEH FATAL EXCEPTION ==========\n\
+             [DEBUG-crash] exception_code=0x{:08X} ({})\n\
+             [DEBUG-crash] thread: {}\n\
+             [DEBUG-crash] instruction_pointer: 0x{:X}{}\n\
+             [DEBUG-crash] ================================================\n",
+            code as u32,
+            code_name,
+            thread_name,
+            record.ExceptionAddress as usize,
+            access_desc,
+        );
+        // 尽力而为：write 失败就静默
+        let _ = std::io::Write::write_all(&mut std::io::stderr(), msg.as_bytes());
+        let _ = std::io::Write::flush(&mut std::io::stderr());
+
+        0 // EXCEPTION_CONTINUE_SEARCH — 让 OS 继续处理（最终生成 dump 或终止进程）
+    }
+
+    unsafe {
+        let handle = AddVectoredExceptionHandler(1, Some(seh_handler));
+        SEH_HANDLE = handle;
+        if handle.is_null() {
+            eprintln!("[DEBUG-crash] SEH handler 注册失败: AddVectoredExceptionHandler 返回 NULL");
+        } else {
+            eprintln!("[DEBUG-crash] SEH handler 注册成功 (handle={:p})", handle);
+        }
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+unsafe fn register_seh_handler() {
+    // macOS / Linux：如有需要可在此添加 sigaction 捕获 SIGSEGV 等信号
 }
