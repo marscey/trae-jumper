@@ -1043,7 +1043,27 @@ impl AccountManager {
     /// 这种场景是合法的，本函数不拦截 injected 状态。
     /// refresh_all_tokens 的 step 3 分流逻辑已确保 injected 账号不会误入本函数。
     pub async fn refresh_token(&mut self, account_id: &str) -> Result<()> {
-        // Guard: 客户端原生登录活跃 → 让位避免 GetUserToken 互踢
+        let account = self
+            .store
+            .accounts
+            .iter()
+            .find(|a| a.id == account_id)
+            .ok_or_else(|| anyhow!("账号不存在"))?
+            .clone();
+
+        // === OAuth Native 模式：走 ExchangeToken Refresh Flow ===
+        // 覆盖两种情况：
+        //  a) oauth_enabled=true（TJ OAuth Native 登录）
+        //  b) has_been_injected + oauth_refresh_token 存在（TJ OAuth 注入后保存了 refresh_token）
+        // ExchangeToken 不作废旧 access_token → 客户端无感，无需 kill+relaunch。
+        // 注意：OAuth 账号可以绕过"客户端活跃守卫"，因为 ExchangeToken 不会互踢。
+        let has_oauth_refresh = account.oauth_enabled
+            || (account.has_been_injected && account.oauth_refresh_token.is_some());
+        if has_oauth_refresh && account.oauth_refresh_token.is_some() {
+            return self.oauth_refresh_and_write_client(account_id, &account).await;
+        }
+
+        // Guard: 客户端原生登录活跃 → 让位避免 GetUserToken 互踢（仅 cookies 模式需要）
         if self.is_active_client_account(account_id) {
             let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S");
             println!(
@@ -1053,13 +1073,13 @@ impl AccountManager {
             return Err(anyhow!("活跃客户端账号不能用 cookies 续签，以免踢掉客户端登录态"));
         }
 
-        let account = self
-            .store
-            .accounts
-            .iter()
-            .find(|a| a.id == account_id)
-            .ok_or_else(|| anyhow!("账号不存在"))?
-            .clone();
+        // cookies 模式必须有 cookies
+        if account.cookies.trim().is_empty() {
+            return Err(anyhow!(
+                "账号 {} 既无 OAuth refresh_token 也无 cookies，无法续签",
+                account.name
+            ));
+        }
 
         let mut client = TraeApiClient::new(&account.cookies)?;
         let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S");
