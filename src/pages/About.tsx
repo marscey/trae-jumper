@@ -1,8 +1,8 @@
 import { useState } from "react";
-import { check } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { ask } from "@tauri-apps/plugin-dialog";
 import { hasTauri } from "../api";
+import { checkForUpdate, downloadUpdate, installUpdate } from "../updater";
 import wxQrCode from "../assets/wx.jpg";
 import logoImage from "../assets/logo.png";
 
@@ -24,45 +24,31 @@ export function About() {
   const handleCheckUpdate = async () => {
     setUpdateStatus({ state: "checking" });
     try {
-      const update = await check();
-      if (!update) {
+      const info = await checkForUpdate();
+      if (!info) {
         setUpdateStatus({ state: "up-to-date" });
         return;
       }
-      const date = update.date ? new Date(update.date).toLocaleDateString("zh-CN") : "";
-      setUpdateStatus({ state: "available", version: update.version, date });
+      const date = info.date;
+      setUpdateStatus({ state: "available", version: info.version, date });
 
       const confirmed = await ask(
-        `检测到新版本 v${update.version}${date ? `（发布于 ${date}）` : ""}，是否现在下载并更新？`,
+        `检测到新版本 v${info.version}${date ? `（发布于 ${date}）` : ""}，是否现在下载并更新？`,
         { title: "发现新版本", kind: "info" }
       );
       if (!confirmed) {
         setUpdateStatus({ state: "idle" });
+        await info.update.close().catch(() => {});
         return;
       }
 
       setUpdateStatus({ state: "downloading", percent: 0 });
-      let downloaded = 0;
-      let total = 0;
-      await update.download((event) => {
-        switch (event.event) {
-          case "Started":
-            total = event.data.contentLength ?? 0;
-            break;
-          case "Progress":
-            downloaded += event.data.chunkLength;
-            break;
-          case "Finished":
-            break;
-        }
-        if (total > 0) {
-          const percent = Math.min(100, Math.round((downloaded / total) * 100));
-          setUpdateStatus({ state: "downloading", percent });
-        }
-      });
+      await downloadUpdate(info.update, (percent) =>
+        setUpdateStatus({ state: "downloading", percent })
+      );
 
       setUpdateStatus({ state: "downloaded" });
-      await update.install();
+      await installUpdate(info.update);
       const restarted = await ask("更新已完成，是否立即重启应用？", {
         title: "更新完成",
         kind: "info",
