@@ -96,6 +96,98 @@ pub fn get_trae_machine_id() -> Result<String> {
     Ok(content.trim().to_string())
 }
 
+/// 客户端设备身份（device_id + machine_id + EC 密钥对）
+#[derive(Debug, Clone)]
+pub struct ClientDeviceIdentity {
+    /// 设备 ID（storage.json 的 `icube-dc:<device_id>` 键名后缀）
+    pub device_id: String,
+    /// 机器 ID（storage.json 的 `telemetry.machineId`，客户端 ExchangeToken 时发送的值）
+    pub machine_id: String,
+    /// 设备 EC 私钥（PKCS8 PEM，与 oauth.rs SigningKey::from_pkcs8_pem 兼容）
+    pub private_key_pem: String,
+    /// 设备 EC 公钥（SPKI PEM）
+    pub public_key_pem: String,
+}
+
+/// 读取 Trae 客户端的设备身份（device_id + machine_id + EC 密钥对）。
+///
+/// 新版客户端（2.3.87413+）在 storage.json 顶层保存 `iCubeAuthInfo://icube-dc:<device_id>`
+/// 设备密钥对（PKCS8 PEM，crypto.rs 可直接解密），`telemetry.machineId` 即客户端
+/// ExchangeToken DeviceInfo 中发送的 MachineID（实测一致）。
+///
+/// OAuth 必须复用该身份签发凭据：新版客户端内核（3.4.20+）启动时会用**自己的**
+/// icube-dc 设备密钥对 refreshToken 做 ExchangeToken 自刷，若凭据绑定的是 TJ 自建
+/// 密钥对，服务端返回 401 "Token device not match"（Code 20403），客户端随即
+/// clearUserInfo 清空登录态 —— 这是"切换后 TRAE CN 未登录"的根因。
+///
+/// variant 为 None 时读取当前目标客户端。
+pub fn read_client_device_identity(
+    variant: Option<&crate::trae_app::TraeAppVariant>,
+) -> Result<ClientDeviceIdentity> {
+    let trae_path = crate::trae_app::data_dir_of(
+        variant.unwrap_or_else(|| crate::trae_app::current()),
+    );
+    let storage_path = trae_path
+        .join("User")
+        .join("globalStorage")
+        .join("storage.json");
+
+    if !storage_path.exists() {
+        return Err(anyhow!("未找到客户端 storage.json: {}", storage_path.display()));
+    }
+    let content = fs::read_to_string(&storage_path)
+        .map_err(|e| anyhow!("读取 storage.json 失败: {}", e))?;
+    let storage: serde_json::Value = serde_json::from_str(&content)
+        .map_err(|e| anyhow!("解析 storage.json 失败: {}", e))?;
+    let obj = storage
+        .as_object()
+        .ok_or_else(|| anyhow!("storage.json 顶层不是对象"))?;
+
+    let (dc_key, dc_val) = obj
+        .iter()
+        .find(|(k, _)| k.starts_with("iCubeAuthInfo://icube-dc:"))
+        .ok_or_else(|| anyhow!("storage.json 无 icube-dc 设备密钥键（客户端未安装或版本过旧）"))?;
+    let device_id = dc_key
+        .trim_start_matches("iCubeAuthInfo://icube-dc:")
+        .to_string();
+    let raw = dc_val
+        .as_str()
+        .ok_or_else(|| anyhow!("icube-dc 值不是字符串"))?;
+    let plain = crate::crypto::read_storage_value(raw);
+    let parsed: serde_json::Value = serde_json::from_str(&plain)
+        .map_err(|e| anyhow!("解析 icube-dc 内容失败: {}", e))?;
+    let private_key_pem = parsed
+        .get("privateKeyPEM")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow!("icube-dc 缺少 privateKeyPEM"))?
+        .trim()
+        .to_string();
+    let public_key_pem = parsed
+        .get("publicKeyPEM")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow!("icube-dc 缺少 publicKeyPEM"))?
+        .trim()
+        .to_string();
+
+    // machine_id 取客户端自己的 telemetry.machineId（客户端 ExchangeToken 实测发送该值）
+    let machine_id = obj
+        .get("telemetry.machineId")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| {
+            // 兜底：IOPlatformUUID / 注册表 MachineGuid（get_machine_guid 的返回）
+            get_machine_guid().unwrap_or_else(|_| Uuid::new_v4().to_string())
+        });
+
+    Ok(ClientDeviceIdentity {
+        device_id,
+        machine_id,
+        private_key_pem,
+        public_key_pem,
+    })
+}
+
 /// 读取 Trae 客户端的本机真实 device-id（ahanet/tt_net_config.config）
 ///
 /// 文件内容为键值对格式，device_id 字段形如：

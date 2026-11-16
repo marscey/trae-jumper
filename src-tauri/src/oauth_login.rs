@@ -85,15 +85,51 @@ pub async fn start_oauth_login_flow(
         let _ = wv.close();
     }
 
-    // === Step 1: 生成密钥对 + PKCE + 端口 ===
+    // === Step 1: 设备身份 + PKCE + 端口 ===
     let t1 = Instant::now();
-    let (private_pem, public_pem) = crate::oauth::generate_key_pair()
-        .map_err(|e| format!("密钥对生成失败: {}", e))?;
-    println!(
-        "[OAuth-DEBUG] [{}ms] generate_key_pair（耗时 {}ms）",
-        t0.elapsed().as_millis(),
-        t1.elapsed().as_millis()
-    );
+    // 优先复用 Trae 客户端的设备身份（storage.json 的 icube-dc 密钥对 + device_id +
+    // telemetry.machineId）。新版客户端内核（3.4.20+）启动时会用自己的 icube-dc 设备
+    // 密钥对 refreshToken 做 ExchangeToken 自刷，若 TJ 用自建密钥对签发凭据，服务端
+    // 返回 401 "Token device not match" 并清空登录态（切换失效根因）。
+    // 复用后 TJ 与客户端是同一设备身份，注入的凭据可被客户端正常续签。
+    let client_identity = crate::machine::read_client_device_identity(None).ok();
+    let (device_id, machine_id, private_pem, public_pem) = match &client_identity {
+        Some(id) => {
+            println!(
+                "[OAuth-DEBUG] [{}ms] 复用客户端设备身份 device_id={}（耗时 {}ms）",
+                t0.elapsed().as_millis(),
+                id.device_id,
+                t1.elapsed().as_millis()
+            );
+            (
+                id.device_id.clone(),
+                id.machine_id.clone(),
+                id.private_key_pem.clone(),
+                id.public_key_pem.clone(),
+            )
+        }
+        None => {
+            let (priv_pem, pub_pem) = crate::oauth::generate_key_pair()
+                .map_err(|e| format!("密钥对生成失败: {}", e))?;
+            // fallback：复用客户端 device_id（ahanet 配置），无则从 machine_guid 派生
+            let dev_id = crate::machine::get_trae_device_id().unwrap_or_else(|_| {
+                let guid = crate::machine::get_machine_guid()
+                    .unwrap_or_else(|_| uuid::Uuid::new_v4().to_string());
+                let mut hasher = Sha256::new();
+                hasher.update(format!("traejumper-oauth-device:{}", guid).as_bytes());
+                let hash = hasher.finalize();
+                hex::encode(&hash[..16])
+            });
+            let mach_id = crate::machine::get_machine_guid()
+                .unwrap_or_else(|_| uuid::Uuid::new_v4().to_string());
+            println!(
+                "[OAuth-DEBUG] [{}ms] generate_key_pair（客户端设备身份不可用，已自建密钥对）（耗时 {}ms）",
+                t0.elapsed().as_millis(),
+                t1.elapsed().as_millis()
+            );
+            (dev_id, mach_id, priv_pem, pub_pem)
+        }
+    };
 
     let t2 = Instant::now();
     let port = crate::oauth::find_free_port()
@@ -106,21 +142,6 @@ pub async fn start_oauth_login_flow(
     );
 
     let t3 = Instant::now();
-    // device_id 复用 Trae 客户端已有的 device_id
-    // 这样同一台机器 = 同一个 OAuth 设备绑定，不会额外占用账号的设备绑定额度
-    let device_id = crate::machine::get_trae_device_id()
-        .unwrap_or_else(|_| {
-            // fallback：从 machine_guid 派生（一台机器固定值）
-            let guid = crate::machine::get_machine_guid()
-                .unwrap_or_else(|_| Uuid::new_v4().to_string());
-            let mut hasher = Sha256::new();
-            hasher.update(format!("traejumper-oauth-device:{}", guid).as_bytes());
-            let hash = hasher.finalize();
-            // 取前 32 hex 字符（UUID simple 格式长度）
-            hex::encode(&hash[..16])
-        });
-    let machine_id = crate::machine::get_machine_guid()
-        .unwrap_or_else(|_| uuid::Uuid::new_v4().to_string());
     let (authorize_url, code_verifier) = crate::oauth::build_authorize_url(
         &variant, port, &device_id, &machine_id,
     );

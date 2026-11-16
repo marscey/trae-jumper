@@ -51,11 +51,20 @@ temp_repo/
 # Git
 .git/
 
+## Agent
+AGENT.md
+
 # Claude AI
 .claude/
 CLAUDE.md
 
+# TRAE
 .trae/
+
+# Workbuddy
+.workbuddy/
+
+
 
 # Application data (optional, uncomment if you don't want to track)
 # *.db
