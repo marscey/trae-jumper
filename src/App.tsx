@@ -1,14 +1,7 @@
-import { useState, useEffect, useCallback, useRef, type ReactNode } from "react";
-import { createPortal } from "react-dom";
+import { useState, useEffect } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { listen } from "@tauri-apps/api/event";
-import { relaunch } from "@tauri-apps/plugin-process";
-import type { Update } from "@tauri-apps/plugin-updater";
-import { checkForUpdate, downloadUpdate, installUpdate } from "./updater";
 import { UpdateBanner } from "./components/UpdateBanner";
 import { Sidebar } from "./components/Sidebar";
-import { AccountCard } from "./components/AccountCard";
-import { AccountListItem } from "./components/AccountListItem";
 import { AddAccountModal } from "./components/AddAccountModal";
 import { ContextMenu } from "./components/ContextMenu";
 import { DetailModal } from "./components/DetailModal";
@@ -17,35 +10,38 @@ import { Toast } from "./components/Toast";
 import { ConfirmModal } from "./components/ConfirmModal";
 import { InfoModal } from "./components/InfoModal";
 import { UpdateTokenModal } from "./components/UpdateTokenModal";
-import HeaderRow from "./components/HeaderRow";
 import { Dashboard } from "./pages/Dashboard";
+import { AccountsPage } from "./pages/AccountsPage";
 import { Settings } from "./pages/Settings";
 import { About } from "./pages/About";
 import { useToast } from "./hooks/useToast";
+import { useAccountsData } from "./hooks/useAccountsData";
+import { useAutoUpdate } from "./hooks/useAutoUpdate";
+import { useAppModals } from "./hooks/useAppModals";
+import { useTokenActions } from "./features/accounts/useTokenActions";
+import { useCheckinActions } from "./features/accounts/useCheckinActions";
+import { useAccountActions } from "./features/accounts/useAccountActions";
+import { useImportExport } from "./features/accounts/useImportExport";
 import * as api from "./api";
-import type { AccountBrief, CheckinAllStatusItem, CheckinConfig, CheckinHeaderEntry, CreditSummary, UsageSummary } from "./types";
+import type { ViewMode } from "./types";
 import "./App.css";
 
-interface AccountWithUsage extends AccountBrief {
-  usage?: UsageSummary | null;
-  credits?: CreditSummary | null;
-}
-
-type ViewMode = "grid" | "list";
-
+/**
+ * 应用组合根：
+ * - 数据层：useAccountsData（账号列表/积分/签到状态 + 定时刷新）
+ * - 弹窗层：useAppModals（全局弹窗状态）
+ * - 操作层：useTokenActions / useCheckinActions / useAccountActions / useImportExport
+ * - 自更新：useAutoUpdate（后台检查 + 静默下载安装）
+ */
 function App() {
-  const [accounts, setAccounts] = useState<AccountWithUsage[]>([]);
-  // 正在加载积分数据的账号 ID 集合（用于占位 loading UI）
-  const [creditsLoadingIds, setCreditsLoadingIds] = useState<Set<string>>(new Set());
-  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
-  const [showAddModal, setShowAddModal] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [importing, setImporting] = useState(false);
+  // 页面导航与客户端信息
   const [currentPage, setCurrentPage] = useState("dashboard");
   const [viewMode, setViewMode] = useState<ViewMode>("grid");
   const [currentClientName, setCurrentClientName] = useState<string>("");
   const [currentLoginUrl, setCurrentLoginUrl] = useState<string>("");
+  const [showAddModal, setShowAddModal] = useState(false);
+
+  const { toasts, addToast, removeToast } = useToast();
 
   // 同步窗口标题（含当前客户端名）
   useEffect(() => {
@@ -70,1320 +66,126 @@ function App() {
         }
       })
       .catch(() => {});
+  }, []);
+
+  // ==== 数据层 ====
+  const {
+    accounts,
+    setAccounts,
+    creditsLoadingIds,
+    loading,
+    error,
+    setError,
+    checkinConfig,
+    setCheckinConfig,
+    markTokenExpired,
+    loadAccounts,
+    refreshAccountsData,
+    handleAccountsStatusSync,
+  } = useAccountsData();
+
+  // 启动时同步全局签到配置（checkinConfig 由 useAccountsData 持有）
+  useEffect(() => {
     api.getCheckinConfig()
       .then((cfg) => setCheckinConfig(cfg))
       .catch(() => {});
-  }, []);
-
-  // 使用自定义 Toast hook
-  const { toasts, addToast, removeToast } = useToast();
-
-  // 确认弹窗状态
-  const [confirmModal, setConfirmModal] = useState<{
-    isOpen: boolean;
-    title: string;
-    message: string;
-    type: "danger" | "warning" | "info";
-    icon?: string;
-    confirmText?: string;
-    onConfirm: () => void;
-  } | null>(null);
-
-  // 右键菜单状态
-  const [contextMenu, setContextMenu] = useState<{
-    x: number;
-    y: number;
-    accountId: string;
-  } | null>(null);
-
-  // 详情弹窗状态
-  const [detailAccount, setDetailAccount] = useState<AccountWithUsage | null>(null);
-
-  // 用量弹窗状态
-  const [usageModal, setUsageModal] = useState<{
-    accountId: string;
-    accountName: string;
-  } | null>(null);
-
-  // 刷新中的账号 ID
-  const [refreshingIds, setRefreshingIds] = useState<Set<string>>(new Set());
-  const [renewingClientIds, setRenewingClientIds] = useState<Set<string>>(new Set());
-  // 检测当前账号（重新扫描客户端登录态）
-  const [checkCurrentLoading, setCheckCurrentLoading] = useState(false);
-  // 全局签到配置（DetailModal 三态开关需要总开关状态）
-  const [checkinConfig, setCheckinConfig] = useState<CheckinConfig | null>(null);
-  // 自动更新状态（后台检查 + 静默下载 + 重启提示）
-  const [autoUpdate, setAutoUpdate] = useState<{
-    status: "downloading" | "ready";
-    version: string;
-    percent: number;
-    update: Update;
-  } | null>(null);
-
-  // 更新 Token 弹窗状态
-  const [updateTokenModal, setUpdateTokenModal] = useState<{
-    accountId: string;
-    accountName: string;
-  } | null>(null);
-
-  // 操作组下拉菜单状态
-  const [actionMenuOpen, setActionMenuOpen] = useState(false);
-  const [menuPos, setMenuPos] = useState<{ top: number; right: number }>({ top: 0, right: 0 });
-  const actionBtnRef = useRef<HTMLButtonElement>(null);
-
-  const toggleActionMenu = () => {
-    if (!actionMenuOpen && actionBtnRef.current) {
-      const rect = actionBtnRef.current.getBoundingClientRect();
-      setMenuPos({ top: rect.bottom + 8, right: window.innerWidth - rect.right });
-    }
-    setActionMenuOpen(!actionMenuOpen);
-  };
-
-  // 菜单打开时监听 scroll/resize，自动关闭防止定位错乱
-  useEffect(() => {
-    if (!actionMenuOpen) return;
-    const close = () => setActionMenuOpen(false);
-    window.addEventListener("scroll", close, true);
-    window.addEventListener("resize", close);
-    return () => {
-      window.removeEventListener("scroll", close, true);
-      window.removeEventListener("resize", close);
-    };
-  }, [actionMenuOpen]);
-
-  // 信息展示弹窗状态
-  const [infoModal, setInfoModal] = useState<{
-    isOpen: boolean;
-    title: string;
-    icon: string;
-    sections: Array<{
-      title?: string;
-      content: ReactNode;
-      type?: "text" | "code" | "list" | "hint";
-    }>;
-    confirmText: string;
-    onConfirm: () => void;
-    extraText?: string;
-    onExtra?: () => void;
-  } | null>(null);
-
-  // 独立后台加载签到状态（与积分解耦，失败静默，不阻塞主流程）
-  const loadCheckinStatuses = useCallback(async (): Promise<void> => {
-    try {
-      const statuses = await api.checkinStatusAll();
-      const statusMap = new Map<string, CheckinAllStatusItem>();
-      for (const s of statuses) {
-        statusMap.set(s.account_id, s);
-      }
-      setAccounts((prev) =>
-        prev.map((account) => {
-          const s = statusMap.get(account.id);
-          return s
-            ? {
-                ...account,
-                checkin_status: {
-                  code: s.code,
-                  message: s.message,
-                  checked_in: s.checked_in,
-                  credits: s.credits,
-                  enable: s.enable,
-                },
-              }
-            : account;
-        })
-      );
-    } catch (err) {
-      console.warn("[WARN] 批量查询签到状态失败:", err);
-    }
-  }, []);
-
-  // 加载账号列表（先显示列表，再后台加载使用量 + 积分 + 签到状态）
-  // 增加重试机制：Tauri 初始化可能需要时间，首次调用失败时自动重试
-  const loadAccounts = useCallback(async (retries = 2): Promise<void> => {
-    setLoading(true);
-    try {
-      const list = await api.getAccounts();
-
-      // 先显示账号列表（占位：无积分数据，卡片显示 loading）
-      setAccounts(list.map((account) => ({ ...account, usage: undefined, credits: undefined, checkin_status: undefined })));
-      setLoading(false);
-
-      if (list.length > 0) {
-        // 标记所有账号进入"积分加载中"状态（占位 UI）
-        setCreditsLoadingIds(new Set(list.map((a) => a.id)));
-
-        // 并行加载积分：每个账号的请求各自独立，完成一个立即更新显示一个（不等待全部完成）
-        await Promise.all(
-          list.map(async (account, index) => {
-            // 积分优先；旧配额作为回退由后端在 get_account_credits 内自动处理，
-            // 这里不再额外调用 getAccountUsage，减少请求量（CN/WORK 用积分接口，国际版后端回退）
-            const credits = await api
-              .getAccountCredits(account.id)
-              .catch((err) => { markTokenExpired(account.id, err); return null; });
-
-            // 逐个更新对应账号（按 index 对齐）
-            setAccounts((prev) =>
-              prev.map((a, i) => (i === index ? { ...a, credits } : a))
-            );
-
-            // 若积分接口返回"非积分计费"（国际版），再补拉旧配额使用量
-            if (credits && !credits.is_credits_billing) {
-              const usage = await api
-                .getAccountUsage(account.id)
-                .catch((err) => { markTokenExpired(account.id, err); return null; });
-              setAccounts((prev) =>
-                prev.map((a, i) => (i === index ? { ...a, usage } : a))
-              );
-            }
-
-            // 该账号积分加载完成，移出加载集合
-            setCreditsLoadingIds((prev) => {
-              const next = new Set(prev);
-              next.delete(account.id);
-              return next;
-            });
-          })
-        );
-      }
-
-      // 签到状态独立后台并行加载，与积分解耦、不阻塞积分显示
-      loadCheckinStatuses().catch(() => {});
-    } catch (err: any) {
-      console.error("[ERROR] loadAccounts failed:", err);
-      if (retries > 0) {
-        console.log(`[INFO] Retrying loadAccounts (${retries} retries left)...`);
-        setTimeout(() => loadAccounts(retries - 1), 500);
-      } else {
-        setError(err.message || "加载账号失败");
-        setCreditsLoadingIds(new Set());
-        setLoading(false);
-      }
-    }
-  }, [loadCheckinStatuses]);
-
-  // 仅同步「当前账号」标记（切换目标客户端后调用）。
-  // 只做本地状态更新（is_current 徽章），不重新请求账号列表与用量/积分/签到状态。
-  const handleAccountsStatusSync = useCallback((current: AccountBrief | null) => {
-    setAccounts((prev) =>
-      prev.map((account) => ({ ...account, is_current: current ? account.id === current.id : false }))
-    );
-  }, []);
-
-  // 检测 API 返回"Token 已过期"(401)的错误，即时将该账号的状态标签更新为"已过期"
-  // （后端已把 token_expired_at 置为当前时间并持久化，这里同步更新内存态，避免重构前一直显示"正常"）
-  // 客户端登录中的账号除外：单活跃 Token 下其 Token 由客户端持有，401 属预期，不标红
-  const markTokenExpired = useCallback((accountId: string, err: any) => {
-    if (!err) return;
-    const msg = String(err?.message || "");
-    if (msg.includes("Token 已过期") || msg.includes("401")) {
-      setAccounts((prev) =>
-        prev.map((a) =>
-          a.id === accountId && !a.is_client_active ? { ...a, token_expired_at: new Date().toISOString() } : a
-        )
-      );
-    }
-  }, []);
-
-  // 局部刷新：后台请求新数据，逐个替换，不重置 UI、不闪烁
-  const refreshAccountsData = useCallback(async () => {
-    try {
-      const list = await api.getAccounts();
-      // 先同步账号元数据（名称、状态标签等），保留旧 usage/credits
-      setAccounts((prev) => {
-        const map = new Map(prev.map((a) => [a.id, a]));
-        return list.map((a) => {
-          const old = map.get(a.id);
-          return old ? { ...old, ...a } : { ...a, usage: undefined, credits: undefined };
-        });
-      });
-
-      // 逐个请求积分数据，完成后原地替换
-      await Promise.all(
-        list.map(async (account, index) => {
-          const credits = await api
-            .getAccountCredits(account.id)
-            .catch((err) => { markTokenExpired(account.id, err); return null; });
-
-          setAccounts((prev) =>
-            prev.map((a, i) => (i === index ? { ...a, credits } : a))
-          );
-
-          if (credits && !credits.is_credits_billing) {
-            const usage = await api
-              .getAccountUsage(account.id)
-              .catch((err) => { markTokenExpired(account.id, err); return null; });
-            setAccounts((prev) =>
-              prev.map((a, i) => (i === index ? { ...a, usage } : a))
-            );
-          }
-        })
-      );
-
-      // 签到状态后台加载
-      loadCheckinStatuses().catch(() => {});
-    } catch (err) {
-      console.warn("[WARN] 局部刷新失败:", err);
-    }
-  }, [loadCheckinStatuses, markTokenExpired]);
-
-  // 初始化加载：等待 Tauri 就绪后加载账号
-  // 顺序：等待 Tauri → 续签 Token（含客户端同步）→ 加载账号
-  useEffect(() => {
-    let cancelled = false;
-
-    const init = async () => {
-      // 等待 Tauri 就绪（最多 3 秒）
-      for (let i = 0; i < 30; i++) {
-        if (cancelled) return;
-        if (api.hasTauri()) break;
-        await new Promise((r) => setTimeout(r, 100));
-      }
-
-      if (cancelled) return;
-
-      // 先续签 Token（含从客户端同步活跃账号的最新 Token），避免加载时命中过期 Token
-      try {
-        const refreshed = await api.refreshAllTokens();
-        if (refreshed.length > 0 && !cancelled) {
-          console.log(`[INFO] 启动时自动刷新了 ${refreshed.length} 个 Token`);
-        }
-      } catch (e) {
-        console.warn("[WARN] refreshAllTokens failed on startup:", e);
-      }
-
-      if (cancelled) return;
-
-      // 加载账号列表
-      await loadAccounts();
-    };
-
-    init();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [loadAccounts]);
-
-  // 后端自动续签成功（token-refreshed 事件）→ 静默局部刷新账号列表，
-  // 修复"列表显示过期但实际已续期"不同步的问题
-  useEffect(() => {
-    if (!api.hasTauri()) return;
-    let unlisten: (() => void) | undefined;
-    let disposed = false;
-    listen<string[]>("token-refreshed", () => {
-      refreshAccountsData();
-    })
-      .then((fn) => {
-        if (disposed) fn();
-        else unlisten = fn;
-      })
-      .catch(() => {});
-    return () => {
-      disposed = true;
-      unlisten?.();
-    };
-  }, [refreshAccountsData]);
-
-  // 自动刷新：读取 auto_refresh 配置，动态启停定时器；每 30s 重新拉一次配置以响应设置页的即时修改
-  // 使用 refreshAccountsData（局部刷新）而非 loadAccounts（全量重建），避免 UI 闪烁
-  const autoRefreshTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const configWatcherRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  useEffect(() => {
-    let stopped = false;
-    let lastEnabled = false;
-    let lastInterval = -1;
-
-    const apply = (enabled: boolean, interval: number) => {
-      // 配置未变 → 不动，避免反复重建
-      if (enabled === lastEnabled && interval === lastInterval) return;
-      lastEnabled = enabled;
-      lastInterval = interval;
-
-      if (autoRefreshTimerRef.current) {
-        clearInterval(autoRefreshTimerRef.current);
-        autoRefreshTimerRef.current = null;
-      }
-      if (!enabled) return;
-      const ms = Math.max(1, interval) * 60 * 1000;
-      autoRefreshTimerRef.current = setInterval(async () => {
-        try {
-          // 先续签 Token（含从客户端同步活跃账号的最新 Token），再局部刷新数据
-          await api.refreshAllTokens().catch(() => {});
-          await refreshAccountsData();
-        } catch (e) {
-          console.warn("[WARN] 自动刷新账号数据失败:", e);
-        }
-      }, ms);
-    };
-
-    const loadAndApply = async () => {
-      if (stopped) return;
-      try {
-        const cfg = await api.getCheckinConfig();
-        if (stopped) return;
-        apply(cfg.auto_refresh_enabled, Number(cfg.auto_refresh_interval));
-      } catch (e) {
-        console.warn("[WARN] 加载自动刷新配置失败:", e);
-      }
-    };
-
-    loadAndApply();
-    // 配置监视器：设置页改完后，最多 30s 生效（不改则无副作用）
-    configWatcherRef.current = setInterval(loadAndApply, 30_000);
-
-    return () => {
-      stopped = true;
-      if (autoRefreshTimerRef.current) {
-        clearInterval(autoRefreshTimerRef.current);
-        autoRefreshTimerRef.current = null;
-      }
-      if (configWatcherRef.current) {
-        clearInterval(configWatcherRef.current);
-        configWatcherRef.current = null;
-      }
-    };
-  }, [refreshAccountsData]);
-
-  // 自动检查更新：启动 10s 后检查一次，之后每 6 小时检查一次；
-  // 发现新版本后后台静默下载并安装，完成后提示重启生效（避免依赖用户手动点击）
-  const checkedUpdateVersionsRef = useRef<Set<string>>(new Set());
-  useEffect(() => {
-    // 开发模式（tauri dev）下跳过，避免 dev 环境触发正式包安装
-    if (import.meta.env.DEV || !api.hasTauri()) return;
-    let cancelled = false;
-    let running = false;
-
-    const runCheck = async () => {
-      if (running || cancelled) return;
-      running = true;
-      let attemptedVersion: string | null = null;
-      try {
-        const info = await checkForUpdate();
-        if (!info) return;
-        if (cancelled || checkedUpdateVersionsRef.current.has(info.version)) {
-          info.update.close().catch(() => {});
-          return;
-        }
-        attemptedVersion = info.version;
-        checkedUpdateVersionsRef.current.add(info.version);
-        setAutoUpdate({ status: "downloading", version: info.version, percent: 0, update: info.update });
-        await downloadUpdate(info.update, (percent) => {
-          if (cancelled) return;
-          setAutoUpdate((prev) =>
-            prev && prev.status === "downloading" ? { ...prev, percent } : prev
-          );
-        });
-        if (cancelled) return;
-        await installUpdate(info.update);
-        if (cancelled) return;
-        setAutoUpdate((prev) => (prev ? { ...prev, status: "ready", percent: 100 } : prev));
-      } catch (e) {
-        console.warn("[WARN] 自动检查/下载更新失败:", e);
-        // 失败时移除标记，后续检查仍可重试
-        if (attemptedVersion) checkedUpdateVersionsRef.current.delete(attemptedVersion);
-        if (!cancelled) {
-          setAutoUpdate((prev) => (prev && prev.status === "downloading" ? null : prev));
-        }
-      } finally {
-        running = false;
-      }
-    };
-
-    const firstTimer = setTimeout(runCheck, 10_000);
-    const interval = setInterval(runCheck, 6 * 60 * 60 * 1000);
-    return () => {
-      cancelled = true;
-      clearTimeout(firstTimer);
-      clearInterval(interval);
-    };
-  }, []);
-
-  // 安装更新后重启应用
-  const handleRestartForUpdate = async () => {
-    try {
-      await relaunch();
-    } catch (e) {
-      addToast("error", `重启应用失败：${e instanceof Error ? e.message : String(e)}`);
-    }
-  };
-
-  // 添加账号
-  const handleAddAccount = async (token: string, cookies?: string) => {
-    await api.addAccountByToken(token, cookies);
-    addToast("success", "账号添加成功");
-    await loadAccounts();
-  };
-
-  // 删除账号
-  const handleDeleteAccount = async (accountId: string) => {
-    const account = accounts.find((a) => a.id === accountId);
-    const accountInfo = account
-      ? `账号：${account.email || account.name || "未知"}`
-      : "";
-    const detailLines = [
-      accountInfo,
-      account ? `ID：${account.id}` : `ID：${accountId}`,
-    ]; // 账号名 + ID 两个关键信息
-    setConfirmModal({
-      isOpen: true,
-      title: "删除账号",
-      message: `确定要删除以下账号吗？删除后无法恢复。\n\n${detailLines.join("\n")}`,
-      type: "danger",
-      onConfirm: async () => {
-        // 点击确认立即关闭弹窗（与其他确认逻辑保持一致，避免 await 期间弹窗残留）
-        setConfirmModal(null);
-        try {
-          await api.removeAccount(accountId);
-          setSelectedIds((prev) => {
-            const next = new Set(prev);
-            next.delete(accountId);
-            return next;
-          });
-          addToast("success", "账号已删除");
-          await loadAccounts();
-        } catch (err: any) {
-          addToast("error", err.message || "删除账号失败");
-        }
-      },
-    });
-  };
-
-  // 刷新单个账号
-  const handleRefreshAccount = async (accountId: string) => {
-    // 防止重复刷新
-    if (refreshingIds.has(accountId)) {
-      return;
-    }
-
-    setRefreshingIds((prev) => new Set(prev).add(accountId));
-
-    try {
-      const [account, usage, credits] = await Promise.all([
-        api.getAccount(accountId).catch(() => null),
-        api.getAccountUsage(accountId),
-        api.getAccountCredits(accountId).catch(() => null),
-      ]);
-      setAccounts((prev) =>
-        prev.map((a) =>
-          a.id === accountId ? { ...a, ...(account || {}), usage, credits } : a
-        )
-      );
-      addToast("success", "数据刷新成功");
-    } catch (err: any) {
-      markTokenExpired(accountId, err);
-      addToast("error", err.message || "刷新失败");
-    } finally {
-      setRefreshingIds((prev) => {
-        const next = new Set(prev);
-        next.delete(accountId);
-        return next;
-      });
-    }
-  };
-
-  // 手动续签 Token：调用后端 refresh_token（cookies 续签），成功后刷新账号数据
-  const handleManualRefreshToken = async (accountId: string) => {
-    if (refreshingIds.has(accountId)) return;
-    setRefreshingIds((prev) => new Set(prev).add(accountId));
-    try {
-      await api.refreshToken(accountId);
-      addToast("success", "Token 续签成功");
-      // 续签成功后刷新该账号数据（token、积分、用量）
-      await handleRefreshAccount(accountId);
-    } catch (err: any) {
-      addToast("error", err.message || "续签失败");
-    } finally {
-      setRefreshingIds((prev) => {
-        const next = new Set(prev);
-        next.delete(accountId);
-        return next;
-      });
-    }
-  };
-
-  // 手动「续签并写回客户端」：立即 GetUserToken 续签写入客户端 storage.json（不经 cookies 续签守卫，不重启客户端）
-  const handleRenewClientToken = async (accountId: string) => {
-    if (renewingClientIds.has(accountId)) return;
-    setRenewingClientIds((prev) => new Set(prev).add(accountId));
-    try {
-      const msg = await api.renewTokenAndWriteClient(accountId);
-      addToast("success", msg || "已续签并写回客户端");
-      // 写回后刷新该账号数据（token、续签时间等）
-      await handleRefreshAccount(accountId);
-    } catch (err: any) {
-      addToast("error", err.message || "续签并写回客户端失败");
-    } finally {
-      setRenewingClientIds((prev) => {
-        const next = new Set(prev);
-        next.delete(accountId);
-        return next;
-      });
-    }
-  };
-
-  // 选择账号
-  const handleSelectAccount = (accountId: string) => {
-    setSelectedIds((prev) => {
-      const next = new Set(prev);
-      if (next.has(accountId)) {
-        next.delete(accountId);
-      } else {
-        next.add(accountId);
-      }
-      return next;
-    });
-  };
-
-  // 全选/取消全选
-  const handleSelectAll = () => {
-    if (selectedIds.size === accounts.length) {
-      setSelectedIds(new Set());
-    } else {
-      setSelectedIds(new Set(accounts.map((a) => a.id)));
-    }
-  };
-
-  // 右键菜单
-  const handleContextMenu = (e: React.MouseEvent, accountId: string) => {
-    e.preventDefault();
-    setContextMenu({ x: e.clientX, y: e.clientY, accountId });
-  };
-
-  // 切换账号
-  const handleSwitchAccount = async (accountId: string) => {
-    const account = accounts.find((a) => a.id === accountId);
-    if (!account) return;
-
-    const clientName = currentClientName || "客户端";
-
-    const doSwitch = async (force: boolean) => {
-      setSwitchLoading(true);
-      addToast("info", "正在切换账号，请稍候...");
-      try {
-        await api.switchAccount(accountId, force);
-        await loadAccounts();
-        addToast("success", `账号切换成功，请重新打开 ${clientName}`);
-      } catch (err: any) {
-        const msg: string = err?.message || "切换账号失败";
-        // 跨客户端同账号冲突：提示用户是否强制切换（会中断另一客户端会话）
-        if (!force && msg.includes("已在") && msg.includes("登录并活跃")) {
-          setSwitchLoading(false);
-          setConfirmModal({
-            isOpen: true,
-            title: "账号已在其他客户端登录",
-            message: `${msg}\n\n强制切换会中断该客户端正在进行的会话，是否继续？`,
-            type: "warning",
-            confirmText: "强制切换",
-            onConfirm: async () => {
-              setConfirmModal(null);
-              await doSwitch(true);
-            },
-          });
-        } else {
-          addToast("error", msg);
-        }
-      } finally {
-        setSwitchLoading(false);
-      }
-    };
-
-    setConfirmModal({
-      isOpen: true,
-      title: "切换账号",
-      message: `确定要切换到账号 "${account.email || account.name}" 吗？\n\n系统将自动关闭 ${clientName} 并切换登录信息。`,
-      type: "warning",
-      onConfirm: async () => {
-        setConfirmModal(null);
-        await doSwitch(false);
-      },
-    });
-  };
-
-  // 查看详情
-  const handleViewDetail = async (accountId: string) => {
-    const account = accounts.find((a) => a.id === accountId);
-    if (account) {
-      try {
-        // 获取完整的账号信息（包含 token 和 cookies）
-        const fullAccount = await api.getAccount(accountId);
-        setDetailAccount({ ...account, ...fullAccount });
-      } catch (err: any) {
-        addToast("error", "获取账号详情失败");
-        console.error("获取账号详情失败:", err);
-      }
-    }
-  };
-
-  // 更新 Token
-  const handleUpdateToken = async (accountId: string, token: string) => {
-    try {
-      await api.updateAccountToken(accountId, token);
-      addToast("success", "Token 更新成功，账号数据已刷新");
-      // 更新 Token 后刷新该账号数据（与右击"刷新数据"同一逻辑：状态标签、用量、积分）
-      await handleRefreshAccount(accountId);
-    } catch (err: any) {
-      throw err; // 让弹窗显示错误
-    }
-  };
-
-  // 打开更新 Token 弹窗
-  const handleOpenUpdateToken = (accountId: string) => {
-    const account = accounts.find((a) => a.id === accountId);
-    if (account) {
-      setUpdateTokenModal({
-        accountId,
-        accountName: account.email || account.name,
-      });
-    }
-  };
-
-  // 获取礼包（仅国际版有效；国内版积分体系已无"礼包"概念，直接给提示不请求后端）
-  const handleClaimGift = async (accountId: string) => {
-    const account = accounts.find((a) => a.id === accountId);
-    if (!account) return;
-
-    // 国内版 CN / WORK：credits.is_credits_billing=true → 隐藏此功能
-    if (account.credits?.is_credits_billing) {
-      addToast("info", "当前账号为积分体系（CN / WORK），无礼包可领取。若想获得更多积分请前往官网兑换码/签到/邀请奖励。");
-      return;
-    }
-
-    setConfirmModal({
-      isOpen: true,
-      title: "获取礼包",
-      message: `确定要为账号 "${account.email || account.name}" 领取周年礼包吗？\n\n领取后将自动刷新账号额度。`,
-      type: "info",
-      onConfirm: async () => {
-        setConfirmModal(null);
-        addToast("info", "正在领取礼包，请稍候...");
-        try {
-          await api.claimGift(accountId);
-          // 刷新账号数据
-          await handleRefreshAccount(accountId);
-          addToast("success", "礼包领取成功！额度已更新");
-        } catch (err: any) {
-          addToast("error", err.message || "领取礼包失败");
-        }
-      },
-    });
-  };
-
-  // 单个账号签到
-  const handleCheckin = async (accountId: string) => {
-    const account = accounts.find((a) => a.id === accountId);
-    if (!account) return;
-    // 先查签到状态：已签到就直接提示，避免重复 claim 接口调用
-    try {
-      const status = await api.checkinStatus(accountId);
-      if (status.code === 0 && status.checked_in) {
-        addToast("warning", `${account.email || account.name}：今日已签到`);
-        // 更新缓存状态
-        setAccounts((prev) =>
-          prev.map((a) => a.id === accountId ? { ...a, checkin_status: status } : a)
-        );
-        return;
-      }
-    } catch (e) {
-      // 查状态失败不阻塞，继续尝试签到
-      console.warn("[WARN] checkinStatus 查询失败，继续签到：", e);
-    }
-    addToast("info", `正在为 ${account.email || account.name} 签到...`);
-    try {
-      const result = await api.checkin(accountId);
-      if (result.code === 0) {
-        addToast("success", `${account.email || account.name} 签到成功！+200 积分`);
-        // 更新本地状态为已签到
-        setAccounts((prev) =>
-          prev.map((a) => a.id === accountId
-            ? { ...a, checkin_status: { code: 0, message: "success", checked_in: true, credits: 200, enable: true } }
-            : a)
-        );
-        // 刷新一下账号积分汇总（签到后 +200 体现出来）
-        handleRefreshAccount(accountId).catch(() => {});
-      } else {
-        addToast("warning", `${account.email || account.name}：${result.message}`);
-      }
-    } catch (err: any) {
-      addToast("error", err.message || "签到失败");
-    }
-  };
-
-  // 批量签到所有账号
-  const [checkinLoading, setCheckinLoading] = useState(false);
-  // 账号切换 loading（防止切换过程中用户做其他操作）
-  const [switchLoading, setSwitchLoading] = useState(false);
-  const handleCheckinAll = async () => {
-    if (accounts.length === 0) {
-      addToast("warning", "没有账号可签到");
-      return;
-    }
-    setCheckinLoading(true);
-    addToast(
-      "info",
-      `正在签到 ${accounts.length} 个账号（已签到的会自动跳过，仅连续签到时才有延迟）...`
-    );
-    try {
-      const results = await api.checkinAll();
-      let successCount = 0;
-      let skipCount = 0;
-      let failCount = 0;
-      for (const r of results) {
-        if (r.code === 0) {
-          if (r.skipped) skipCount++;
-          else successCount++;
-        } else {
-          failCount++;
-        }
-      }
-      // 更新已签到账号的本地缓存状态
-      const updated = new Map<string, boolean>();
-      for (const r of results) {
-        if (r.code === 0) updated.set(r.account_id, true);
-      }
-      if (updated.size > 0) {
-        setAccounts((prev) =>
-          prev.map((a) =>
-            updated.has(a.id)
-              ? { ...a, checkin_status: { code: 0, message: "success", checked_in: true, credits: 200, enable: true } }
-              : a
-          )
-        );
-      }
-      // 重新加载所有账号积分汇总，把签到得到的 +200 反映出来
-      try {
-        const refreshed = await Promise.allSettled(
-          accounts.map((a) => api.getAccountCredits(a.id))
-        );
-        setAccounts((prev) =>
-          prev.map((account) => {
-            const idx = accounts.findIndex((a) => a.id === account.id);
-            if (idx < 0) return account;
-            const r = refreshed[idx];
-            return {
-              ...account,
-              credits: r?.status === "fulfilled" ? r.value : account.credits,
-            };
-          })
-        );
-      } catch (e) {
-        console.warn("[WARN] 签到后刷新积分汇总失败:", e);
-      }
-
-      // 统计汇总 toast
-      const parts: string[] = [];
-      if (successCount > 0) parts.push(`签到成功 ${successCount} 个`);
-      if (skipCount > 0) parts.push(`已签到跳过 ${skipCount} 个`);
-      if (failCount > 0) parts.push(`失败 ${failCount} 个`);
-      if (failCount === 0) {
-        addToast("success", `签到完成：${parts.join("，")}`);
-      } else {
-        addToast("warning", `签到完成：${parts.join("，")}`);
-      }
-    } catch (err: any) {
-      addToast("error", err.message || "批量签到失败");
-    } finally {
-      setCheckinLoading(false);
-    }
-  };
-
-  // 查看账号签到请求头配置（右键菜单 → 签到请求头）
-  const handleViewCheckinHeaders = async (accountId: string) => {
-    const account = accounts.find((a) => a.id === accountId);
-    if (!account) return;
-    try {
-      const entries = await api.getCheckinHeaders(accountId);
-      const fixed = entries.filter((e) => e.kind === "fixed");
-      const accountOnes = entries.filter((e) => e.kind === "account");
-      const variable = entries.filter(
-        (e) => e.kind === "credential" || e.kind === "dynamic"
-      );
-      const renderRows = (
-        list: CheckinHeaderEntry[],
-        actions?: Record<string, { label: string; action: () => void }>
-      ) => (
-        <div className="info-header-list">
-          {list.map((e) => (
-            <HeaderRow
-              key={e.name}
-              entry={e}
-              actionLabel={actions?.[e.name]?.label}
-              onAction={actions?.[e.name]?.action}
-            />
-          ))}
-        </div>
-      );
-      setInfoModal({
-        isOpen: true,
-        title: `签到请求头 · ${account.email || account.name}`,
-        icon: "🧾",
-        sections: [
-          {
-            title: `固定请求头 · ${fixed.length} 项（所有账号一致，对齐真实客户端抓包）`,
-            content: renderRows(fixed),
-            type: "list",
-          },
-          {
-            title: `账号专属 · 虚拟设备 · ${accountOnes.length} 项（已持久化，跨天不变）`,
-            content: renderRows(accountOnes, {
-              "x-device-id": {
-                label: "重新生成设备 ID",
-                action: () => {
-                  setConfirmModal({
-                    isOpen: true,
-                    title: "重新生成设备 ID",
-                    message:
-                      "⚠️ 确定要重新生成该账号的设备 ID 吗？\n\n" +
-                      "• 将按照当前「设置 → 签到配置」中的设备 ID 策略重新生成一个全新的 x-device-id\n" +
-                      "• 设备型号、机器码、会话 ID 保持不变\n" +
-                      "• 新设备 ID 生效后，下次签到请求会携带它，服务端可能将该账号识别为一台新设备\n" +
-                      "• 建议仅在遇到 9074 等设备风控拒绝时使用",
-                    type: "warning",
-                    onConfirm: async () => {
-                      setConfirmModal(null);
-                      setInfoModal(null);
-                      try {
-                        await api.regenerateDeviceId(accountId);
-                        addToast("success", "设备 ID 已重新生成");
-                        handleViewCheckinHeaders(accountId);
-                      } catch (err: any) {
-                        addToast("error", err.message || "操作失败");
-                      }
-                    },
-                  });
-                },
-              },
-              "x-device-brand": {
-                label: "更换虚拟设备型号",
-                action: () => {
-                  setConfirmModal({
-                    isOpen: true,
-                    title: "更换虚拟设备型号",
-                    message:
-                      "⚠️ 确定要更换该账号的虚拟设备型号吗？\n\n" +
-                      "• 将从设备型号池（MacBookAir / MacBookPro / Mac mini 等 8 款型号）中重新随机分配一台\n" +
-                      "• 设备 ID、机器码、会话 ID 保持不变\n" +
-                      "• 仅改变 x-device-brand 字段值，用于模拟该账号更换了同品牌不同型号的设备",
-                    type: "warning",
-                    onConfirm: async () => {
-                      setConfirmModal(null);
-                      setInfoModal(null);
-                      try {
-                        await api.swapDeviceBrand(accountId);
-                        addToast("success", "虚拟设备型号已更换");
-                        handleViewCheckinHeaders(accountId);
-                      } catch (err: any) {
-                        addToast("error", err.message || "操作失败");
-                      }
-                    },
-                  });
-                },
-              },
-            }),
-            type: "list",
-          },
-          {
-            title: `身份凭证 / 每次请求变化 · ${variable.length} 项`,
-            content: renderRows(variable),
-            type: "list",
-          },
-          {
-            content:
-              "每个账号在添加时即分配一台独立的虚拟设备（设备型号 / 设备ID / 机器码 / 会话ID），此后所有签到与状态查询请求始终携带同一组值，模拟该账号固定在一台设备上签到的真实行为；不同账号对应不同虚拟设备，避免多账号共享同一设备指纹被服务端聚类识别。",
-            type: "hint",
-          },
-        ],
-        confirmText: "关闭",
-        onConfirm: () => setInfoModal(null),
-        extraText: "⚠️ 重置完整签到档案",
-        onExtra: () => handleResetCheckinDevice(accountId),
-      });
-    } catch (err: any) {
-      addToast("error", err.message || "获取签到请求头失败");
-    }
-  };
-
-  // 重置单个账号的签到虚拟设备档案（被风控时单独换指纹）
-  const handleResetCheckinDevice = async (accountId: string) => {
-    const account = accounts.find((a) => a.id === accountId);
-    const name = account?.email || account?.name || accountId;
-    setConfirmModal({
-      isOpen: true,
-      title: "重置完整签到档案",
-      icon: "🔄",
-      message:
-        `⚠️ 确定要重置账号「${name}」的签到虚拟设备吗？\n\n` +
-        "这将为该账号重新分配一套全新的设备型号 / 设备ID / 机器码 / 会话ID，\n" +
-        "换掉当前这套指纹（用于解决 9074 等风控拒绝）。\n" +
-        "重置后请重新尝试签到。",
-      type: "danger",
-      onConfirm: async () => {
-        setConfirmModal(null);
-        try {
-          await api.resetCheckinDevice(accountId);
-          addToast("success", `已重置「${name}」的签到虚拟设备，请重新尝试签到`);
-          // 关闭旧弹窗，刷新新的请求头展示
-          setInfoModal(null);
-          handleViewCheckinHeaders(accountId);
-        } catch (err: any) {
-          addToast("error", err.message || "重置签到设备失败");
-        }
-      },
-    });
-  };
-
-  // 显示导出说明
-  const handleShowExportInfo = () => {
-    if (accounts.length === 0) {
-      addToast("warning", "没有账号可以导出");
-      return;
-    }
-
-    setInfoModal({
-      isOpen: true,
-      title: "导出账号说明",
-      icon: "📤",
-      sections: [
-        {
-          title: "📄 导出格式",
-          content: "JSON 文件 (.json)",
-          type: "text"
-        },
-        {
-          title: "📁 保存位置",
-          content: "浏览器默认下载文件夹\n文件名格式：trae-accounts-YYYY-MM-DD.json",
-          type: "text"
-        },
-        {
-          title: "📋 文件内容",
-          content: `<ul>
-<li>基础信息（用户名、头像、Email 等）</li>
-<li>登录来源标记（OAuth / Cookie / 客户端导入 / 手动 Token）</li>
-<li>凭证数据（JWT Token、Cookies）</li>
-<li>OAuth Native 完整凭证链（Refresh Token + EC P-256 密钥对）</li>
-</ul>`,
-          type: "list"
-        },
-        {
-          title: "✅ 导出后可以",
-          content: `<ul>
-<li>备份账号数据</li>
-<li>迁移到其他设备</li>
-<li>恢复误删的账号</li>
-</ul>`,
-          type: "list"
-        },
-        {
-          title: "🚨 安全警告",
-          content: `<ul>
-<li><strong>包含 OAuth EC P-256 签名私钥</strong>（可伪造身份签发新 Token）</li>
-<li><strong>包含 Refresh Token</strong>（有效期 180 天）</li>
-<li><strong>包含登录凭证</strong>（JWT、Cookies）</li>
-<li><strong>不要分享给任何人、不要上传到云盘或 Git</strong></li>
-<li>迁移完成后建议立即销毁导出文件</li>
-</ul>`,
-          type: "list"
-        },
-        {
-          content: `当前将导出 ${accounts.length} 个账号`,
-          type: "text"
-        }
-      ],
-      confirmText: "开始导出",
-      onConfirm: () => {
-        setInfoModal(null);
-        handleExportAccounts();
-      }
-    });
-  };
-
-  // 导出账号
-  const handleExportAccounts = async () => {
-    try {
-      const data = await api.exportAccounts();
-      const blob = new Blob([data], { type: "application/json" });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      const fileName = `trae-accounts-${new Date().toISOString().split("T")[0]}.json`;
-      a.download = fileName;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
-      addToast("success", `已导出 ${accounts.length} 个账号到下载文件夹：${fileName}`);
-    } catch (err: any) {
-      addToast("error", err.message || "导出失败");
-    }
-  };
-
-  // 显示导入说明
-  const handleShowImportInfo = () => {
-    setInfoModal({
-      isOpen: true,
-      title: "导入账号说明",
-      icon: "📥",
-      sections: [
-        {
-          title: "📄 文件格式",
-          content: "JSON 文件 (.json)",
-          type: "text"
-        },
-        {
-          title: "📋 文件结构示例",
-          content: `[
-  {
-    "name": "用户名",
-    "email": "邮箱地址",
-    "avatar_url": "头像URL",
-    "user_id": "Trae 用户ID",
-    "tenant_id": "租户ID",
-    "region": "CN",
-    "plan_type": "Free",
-    "jwt_token": "JWT Token 字符串",
-    "cookies": "Web Session Cookies",
-    "login_source": "webview_oauth",
-    "oauth_enabled": true,
-    "oauth_refresh_token": "OAuth Refresh Token",
-    "oauth_private_key_pem": "EC P-256 私钥 (PEM)",
-    "oauth_public_key_pem": "EC P-256 公钥 (PEM)",
-    "oauth_device_id": "DeviceID",
-    "oauth_machine_id": "MachineID",
-    "oauth_host": "https://api.trae.com.cn"
-  }
-]`,
-          type: "code"
-        },
-        {
-          title: "✅ 导入步骤",
-          content: `<ul>
-<li>确认后选择 JSON 文件</li>
-<li>系统自动验证格式并恢复登录来源 + OAuth 凭证</li>
-<li>导入所有有效账号（重复账号跳过）</li>
-</ul>`,
-          type: "list"
-        },
-        {
-          title: "⚠️ 注意事项",
-          content: `<ul>
-<li>仅支持本应用导出的格式（flat JSON array）</li>
-<li>OAuth Native 账号的 EC 私钥会一并导入，保证自管续签能力</li>
-<li>旧格式导出文件（无 login_source / oauth_* 字段）会自动按凭证特征推断来源</li>
-<li>迁移完成后建议立即销毁导出文件（含敏感凭证）</li>
-</ul>`,
-          type: "list"
-        }
-      ],
-      confirmText: "选择文件",
-      onConfirm: () => {
-        setInfoModal(null);
-        handleImportAccounts();
-      }
-    });
-  };
-
-  // 导入账号
-  const handleImportAccounts = () => {
-    const input = document.createElement("input");
-    input.type = "file";
-    input.accept = ".json";
-    input.onchange = async (e) => {
-      const file = (e.target as HTMLInputElement).files?.[0];
-      if (!file) return;
-
-      try {
-        setImporting(true);
-        const text = await file.text();
-        const count = await api.importAccounts(text);
-        addToast("success", `成功导入 ${count} 个账号`);
-        await loadAccounts();
-      } catch (err: any) {
-        addToast("error", err.message || "导入失败");
-      } finally {
-        setImporting(false);
-      }
-    };
-    input.click();
-  };
-
-  // 清空所有数据（弹窗确认）
-  const handleClearData = () => {
-    if (accounts.length === 0) {
-      addToast("warning", "没有数据可清空");
-      return;
-    }
-
-    setConfirmModal({
-      isOpen: true,
-      title: "清空所有数据",
-      message: `确定要清空所有账号数据吗？\n\n此操作将删除全部 ${accounts.length} 个账号的数据，包括：\n• 账号信息\n• Token 和 Cookies\n• 使用量统计\n\n此操作不可恢复，请谨慎操作！`,
-      type: "danger",
-      onConfirm: async () => {
-        setConfirmModal(null);
-        try {
-          const count = await api.clearAllAccounts();
-          setSelectedIds(new Set());
-          addToast("success", `已清空 ${count} 个账号数据`);
-          await loadAccounts();
-        } catch (err: any) {
-          addToast("error", err.message || "清空数据失败");
-        }
-      },
-    });
-  };
-
-  // 批量刷新账号：同时刷新 usage（旧配额）+ credits（新积分）
-  // - 无选中：刷新全部账号
-  // - 有选中：刷新选中账号
-  // 底层复用 handleRefreshAccount 的数据范围（usage + credits），保持一致
-  const handleBatchRefresh = async () => {
-    const ids = selectedIds.size > 0
-      ? Array.from(selectedIds)
-      : accounts.map((a) => a.id);
-
-    if (ids.length === 0) {
-      addToast("warning", "暂无账号可刷新");
-      return;
-    }
-
-    addToast("info", `正在刷新 ${ids.length} 个账号...`);
-
-    // 并行刷新（底层与 handleRefreshAccount 一致：usage + credits）
-    const results = await Promise.allSettled(
-      ids.map(async (id) => {
-        try {
-          const [usage, credits] = await Promise.all([
-            api.getAccountUsage(id),
-            api.getAccountCredits(id).catch(() => null),
-          ]);
-          setAccounts((prev) =>
-            prev.map((a) => (a.id === id ? { ...a, usage, credits } : a))
-          );
-          return { id, success: true };
-        } catch (err: any) {
-          markTokenExpired(id, err);
-          return { id, success: false, error: err.message };
-        }
-      })
-    );
-
-    // 统计结果
-    const successCount = results.filter(
-      (r) => r.status === 'fulfilled' && r.value.success
-    ).length;
-    const failCount = ids.length - successCount;
-
-    if (failCount === 0) {
-      addToast("success", `成功刷新 ${successCount} 个账号`);
-    } else {
-      addToast("warning", `刷新完成：${successCount} 成功，${failCount} 失败`);
-    }
-  };
-
-  // 检测当前账号：重新扫描所有已安装客户端的 storage.json，修正"客户端已退出但 TJ 还显示激活态"的标签
-  const handleCheckCurrent = async () => {
-    if (checkCurrentLoading) return;
-    setCheckCurrentLoading(true);
-    try {
-      addToast("info", "正在检测客户端登录态...");
-      await refreshAccountsData();
-      addToast("success", "检测完成，已更新账号状态");
-    } catch (err) {
-      console.warn("[WARN] 检测当前账号失败:", err);
-      addToast("error", "检测失败，请重试");
-    } finally {
-      setCheckCurrentLoading(false);
-    }
-  };
-
-  // 批量删除选中账号（优化：改进错误处理和反馈）
-  const handleBatchDelete = () => {
-    if (selectedIds.size === 0) {
-      addToast("warning", "请先选择要删除的账号");
-      return;
-    }
-
-    const ids = Array.from(selectedIds);
-    const selectedNames = ids
-      .map((id) => {
-        const a = accounts.find((acc) => acc.id === id);
-        return `${a?.email || a?.name || "未知"}（${id}）`;
-      })
-      .join("\n");
-    setConfirmModal({
-      isOpen: true,
-      title: "批量删除",
-      message: `确定要删除选中的 ${ids.length} 个账号吗？此操作无法撤销。\n\n${selectedNames}`,
-      type: "danger",
-      onConfirm: async () => {
-        setConfirmModal(null);
-        addToast("info", `正在删除 ${ids.length} 个账号...`);
-
-        // 并行删除所有选中的账号
-        const results = await Promise.allSettled(
-          ids.map((id) => api.removeAccount(id))
-        );
-
-        // 统计结果
-        const successCount = results.filter((r) => r.status === 'fulfilled').length;
-        const failCount = ids.length - successCount;
-
-        setSelectedIds(new Set());
-        await loadAccounts();
-
-        if (failCount === 0) {
-          addToast("success", `成功删除 ${successCount} 个账号`);
-        } else {
-          addToast("warning", `删除完成：${successCount} 成功，${failCount} 失败`);
-        }
-      },
-    });
-  };
-
-  // 删除过期/失效账号
-  const handleDeleteExpiredAccounts = () => {
-    // 筛选出过期或失效的账号（客户端登录中的账号除外：其 Token 由客户端持有，属正常状态）
-    const expiredAccounts = accounts.filter((account) => {
-      if (account.is_client_active) return false;
-      if (!account.token_expired_at) return false;
-      const expiry = new Date(account.token_expired_at).getTime();
-      if (isNaN(expiry)) return false;
-      return expiry < Date.now(); // Token 已过期
-    });
-
-    if (expiredAccounts.length === 0) {
-      addToast("info", "没有找到过期或失效的账号");
-      return;
-    }
-
-    setConfirmModal({
-      isOpen: true,
-      title: "删除过期账号",
-      message: `检测到 ${expiredAccounts.length} 个过期账号，确定要删除吗？此操作无法撤销。`,
-      type: "warning",
-      onConfirm: async () => {
-        setConfirmModal(null);
-        addToast("info", `正在删除 ${expiredAccounts.length} 个过期账号...`);
-
-        // 并行删除所有过期账号
-        const results = await Promise.allSettled(
-          expiredAccounts.map((account) => api.removeAccount(account.id))
-        );
-
-        // 统计结果
-        const successCount = results.filter((r) => r.status === 'fulfilled').length;
-        const failCount = expiredAccounts.length - successCount;
-
-        setSelectedIds(new Set());
-        await loadAccounts();
-
-        if (failCount === 0) {
-          addToast("success", `成功删除 ${successCount} 个过期账号`);
-        } else {
-          addToast("warning", `删除完成：${successCount} 成功，${failCount} 失败`);
-        }
-      },
-    });
-  };
+  }, [setCheckinConfig]);
+
+  // ==== 自更新 ====
+  const { autoUpdate, setAutoUpdate, handleRestartForUpdate } = useAutoUpdate(addToast);
+
+  // ==== 弹窗层 ====
+  const {
+    confirmModal,
+    setConfirmModal,
+    infoModal,
+    setInfoModal,
+    contextMenu,
+    setContextMenu,
+    detailAccount,
+    setDetailAccount,
+    usageModal,
+    setUsageModal,
+    updateTokenModal,
+    setUpdateTokenModal,
+  } = useAppModals();
+
+  // ==== 操作层 ====
+  const {
+    refreshingIds,
+    renewingClientIds,
+    handleRefreshAccount,
+    handleManualRefreshToken,
+    handleRenewClientToken,
+    handleUpdateToken,
+    handleOpenUpdateToken,
+  } = useTokenActions({
+    accounts,
+    setAccounts,
+    markTokenExpired,
+    addToast,
+    setUpdateTokenModal,
+  });
+
+  const {
+    checkinLoading,
+    handleCheckin,
+    handleCheckinAll,
+    handleViewCheckinHeaders,
+  } = useCheckinActions({
+    accounts,
+    setAccounts,
+    addToast,
+    setConfirmModal,
+    setInfoModal,
+    refreshAccount: handleRefreshAccount,
+  });
+
+  const {
+    selectedIds,
+    setSelectedIds,
+    switchLoading,
+    checkCurrentLoading,
+    handleAddAccount,
+    handleDeleteAccount,
+    handleSelectAccount,
+    handleSelectAll,
+    handleContextMenu,
+    handleSwitchAccount,
+    handleViewDetail,
+    handleClaimGift,
+    handleBatchRefresh,
+    handleCheckCurrent,
+    handleBatchDelete,
+    handleDeleteExpiredAccounts,
+  } = useAccountActions({
+    accounts,
+    setAccounts,
+    loadAccounts,
+    refreshAccountsData,
+    markTokenExpired,
+    addToast,
+    setConfirmModal,
+    setDetailAccount,
+    setContextMenu,
+    currentClientName,
+    refreshAccount: handleRefreshAccount,
+  });
+
+  const {
+    importing,
+    handleShowExportInfo,
+    handleShowImportInfo,
+    handleImportAccounts,
+    handleClearData,
+  } = useImportExport({
+    accounts,
+    loadAccounts,
+    addToast,
+    setConfirmModal,
+    setInfoModal,
+    setSelectedIds,
+  });
 
   return (
     <div className="app">
@@ -1412,271 +214,36 @@ function App() {
         )}
 
         {currentPage === "accounts" && (
-          <>
-            <header className="page-header">
-              <div className="header-left">
-                <h2 className="page-title">账号管理</h2>
-                <p>管理您的账号</p>
-              </div>
-              <div className="header-right">
-                {currentClientName && (
-                  <span className="client-badge" title="当前管理的客户端">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="14" height="14">
-                      <rect x="2" y="3" width="20" height="14" rx="2" ry="2"/>
-                      <line x1="8" y1="21" x2="16" y2="21"/>
-                      <line x1="12" y1="17" x2="12" y2="21"/>
-                    </svg>
-                    {currentClientName}
-                  </span>
-                )}
-                <span className="account-count">共 {accounts.length} 个账号</span>
-                <button className="add-btn" onClick={() => setShowAddModal(true)}>
-                  <span>+</span> 添加账号
-                </button>
-                <div className="action-menu-wrapper">
-                  <button
-                    ref={actionBtnRef}
-                    className="header-btn icon-only"
-                    onClick={toggleActionMenu}
-                    title="更多操作"
-                  >
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="16" height="16">
-                      <circle cx="12" cy="12" r="1"/>
-                      <circle cx="12" cy="5" r="1"/>
-                      <circle cx="12" cy="19" r="1"/>
-                    </svg>
-                  </button>
-                  {actionMenuOpen && createPortal(
-                    <>
-                      <div className="action-menu-overlay" onClick={() => setActionMenuOpen(false)} />
-                      <div
-                        className="action-menu"
-                        style={{ top: menuPos.top, right: menuPos.right }}
-                      >
-                        <button
-                          className="action-menu-item danger"
-                          onClick={() => { setActionMenuOpen(false); handleDeleteExpiredAccounts(); }}
-                          disabled={accounts.length === 0}
-                        >
-                          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="16" height="16">
-                            <path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
-                            <line x1="10" y1="11" x2="10" y2="17"/>
-                            <line x1="14" y1="11" x2="14" y2="17"/>
-                          </svg>
-                          删除过期
-                          {(() => {
-                            // 与 handleDeleteExpiredAccounts 的筛选保持一致：客户端登录中的账号不算过期
-                            const expiredCount = accounts.filter((account) => {
-                              if (account.is_client_active) return false;
-                              if (!account.token_expired_at) return false;
-                              const expiry = new Date(account.token_expired_at).getTime();
-                              if (isNaN(expiry)) return false;
-                              return expiry < Date.now();
-                            }).length;
-                            return expiredCount > 0 ? <span className="badge-count">{expiredCount}</span> : null;
-                          })()}
-                        </button>
-                        <button
-                          className="action-menu-item"
-                          onClick={() => { setActionMenuOpen(false); handleShowImportInfo(); }}
-                        >
-                          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="16" height="16">
-                            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/>
-                          </svg>
-                          导入账号
-                        </button>
-                        <button
-                          className="action-menu-item"
-                          onClick={() => { setActionMenuOpen(false); handleShowExportInfo(); }}
-                          disabled={accounts.length === 0}
-                        >
-                          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="16" height="16">
-                            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12"/>
-                          </svg>
-                          导出账号
-                        </button>
-                      </div>
-                    </>,
-                    document.body
-                  )}
-                </div>
-              </div>
-            </header>
-
-            <main className="app-main">
-              {accounts.length > 0 && (
-                <div className="toolbar">
-                  <div className="toolbar-left">
-                    <label className="select-all">
-                      <input
-                        type="checkbox"
-                        checked={selectedIds.size === accounts.length && accounts.length > 0}
-                        onChange={handleSelectAll}
-                      />
-                      全选 ({selectedIds.size}/{accounts.length})
-                    </label>
-                    <button
-                      className="batch-btn"
-                      onClick={handleBatchRefresh}
-                      title={selectedIds.size > 0 ? `刷新选中的 ${selectedIds.size} 个账号` : "刷新全部账号"}
-                    >
-                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="14" height="14">
-                        <path d="M23 4v6h-6M1 20v-6h6M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>
-                      </svg>
-                      {selectedIds.size > 0 ? `刷新选中 (${selectedIds.size})` : "刷新全部"}
-                    </button>
-                    <button
-                      className={`batch-btn ${checkCurrentLoading ? "loading" : ""}`}
-                      onClick={handleCheckCurrent}
-                      disabled={checkCurrentLoading || accounts.length === 0}
-                      title="重新扫描所有客户端 storage.json，修正'当前活跃'标签（解决客户端已退出但 TJ 仍显示激活态的问题）"
-                    >
-                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="14" height="14">
-                        <circle cx="12" cy="12" r="10"/>
-                        <circle cx="12" cy="12" r="4"/>
-                        <line x1="21.17" y1="8" x2="12" y2="8"/>
-                        <line x1="3.95" y1="6.06" x2="8.54" y2="14"/>
-                        <line x1="10.88" y1="21.94" x2="15.46" y2="14"/>
-                      </svg>
-                      {checkCurrentLoading ? "检测中..." : "检测当前账号"}
-                    </button>
-                    <button
-                      className="batch-btn"
-                      onClick={handleCheckinAll}
-                      disabled={checkinLoading || accounts.length === 0}
-                      title="所有账号每日签到领取积分"
-                    >
-                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="14" height="14">
-                        <rect x="3" y="4" width="18" height="18" rx="2" ry="2"/>
-                        <line x1="16" y1="2" x2="16" y2="6"/>
-                        <line x1="8" y1="2" x2="8" y2="6"/>
-                        <line x1="3" y1="10" x2="21" y2="10"/>
-                        <path d="M9 16l2 2 4-4"/>
-                      </svg>
-                      {checkinLoading ? "签到中..." : "全部签到"}
-                    </button>
-                    {selectedIds.size > 0 && (
-                      <div className="batch-actions">
-                        <button
-                          className="batch-btn primary"
-                          onClick={() => handleSwitchAccount(Array.from(selectedIds)[0])}
-                          disabled={selectedIds.size !== 1}
-                          title={selectedIds.size === 1 ? "切换到选中账号" : "请选择单个账号"}
-                        >
-                          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="14" height="14">
-                            <path d="M17 1l4 4-4 4"/>
-                            <path d="M3 11V9a4 4 0 0 1 4-4h14"/>
-                            <path d="M7 23l-4-4 4-4"/>
-                            <path d="M21 13v2a4 4 0 0 1-4 4H3"/>
-                          </svg>
-                          切换账号
-                        </button>
-                        <button className="batch-btn danger" onClick={handleBatchDelete}>
-                          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="14" height="14">
-                            <path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
-                          </svg>
-                          删除
-                        </button>
-                      </div>
-                    )}
-                  </div>
-                  <div className="toolbar-right">
-                    <div className="view-toggle">
-                      <button
-                        className={`view-btn ${viewMode === "grid" ? "active" : ""}`}
-                        onClick={() => setViewMode("grid")}
-                        title="卡片视图"
-                      >
-                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="16" height="16">
-                          <rect x="3" y="3" width="7" height="7"/>
-                          <rect x="14" y="3" width="7" height="7"/>
-                          <rect x="3" y="14" width="7" height="7"/>
-                          <rect x="14" y="14" width="7" height="7"/>
-                        </svg>
-                      </button>
-                      <button
-                        className={`view-btn ${viewMode === "list" ? "active" : ""}`}
-                        onClick={() => setViewMode("list")}
-                        title="列表视图"
-                      >
-                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="16" height="16">
-                          <line x1="8" y1="6" x2="21" y2="6"/>
-                          <line x1="8" y1="12" x2="21" y2="12"/>
-                          <line x1="8" y1="18" x2="21" y2="18"/>
-                          <line x1="3" y1="6" x2="3.01" y2="6"/>
-                          <line x1="3" y1="12" x2="3.01" y2="12"/>
-                          <line x1="3" y1="18" x2="3.01" y2="18"/>
-                        </svg>
-                      </button>
-                    </div>
-                  </div>
-                </div>
-              )}
-
-              {loading ? (
-                <div className="loading">
-                  <div className="spinner"></div>
-                  <p>加载中...</p>
-                </div>
-              ) : accounts.length === 0 ? (
-                <div className="empty-state">
-                  <div className="empty-icon">📋</div>
-                  <h3>暂无账号</h3>
-                  <p>点击上方按钮添加账号，或导入已有账号</p>
-                  <div className="empty-actions">
-                    <button className="empty-btn primary" onClick={() => setShowAddModal(true)}>
-                      添加账号
-                    </button>
-                    <button className="empty-btn" onClick={handleImportAccounts}>
-                      导入账号
-                    </button>
-                  </div>
-                </div>
-              ) : viewMode === "grid" ? (
-                <div className="account-grid">
-                  {accounts.map((account) => (
-                    <AccountCard
-                      key={account.id}
-                      account={account}
-                      usage={account.usage || null}
-                      credits={account.credits || null}
-                      creditsLoading={creditsLoadingIds.has(account.id)}
-                      selected={selectedIds.has(account.id)}
-                      onSelect={handleSelectAccount}
-                      onContextMenu={handleContextMenu}
-                      onViewDetail={handleViewDetail}
-                      onRefresh={handleManualRefreshToken}
-                      refreshing={refreshingIds.has(account.id)}
-                      onRenewClient={handleRenewClientToken}
-                      renewingClient={renewingClientIds.has(account.id)}
-                      checkinConfig={checkinConfig}
-                    />
-                  ))}
-                </div>
-              ) : (
-                <div className="account-list">
-                  {accounts.map((account) => (
-                    <AccountListItem
-                      key={account.id}
-                      account={account}
-                      usage={account.usage || null}
-                      credits={account.credits || null}
-                      creditsLoading={creditsLoadingIds.has(account.id)}
-                      selected={selectedIds.has(account.id)}
-                      onSelect={handleSelectAccount}
-                      onContextMenu={handleContextMenu}
-                      onViewDetail={handleViewDetail}
-                      onRefresh={handleManualRefreshToken}
-                      refreshing={refreshingIds.has(account.id)}
-                      onRenewClient={handleRenewClientToken}
-                      renewingClient={renewingClientIds.has(account.id)}
-                      checkinConfig={checkinConfig}
-                    />
-                  ))}
-                </div>
-              )}
-            </main>
-          </>
+          <AccountsPage
+            accounts={accounts}
+            creditsLoadingIds={creditsLoadingIds}
+            refreshingIds={refreshingIds}
+            renewingClientIds={renewingClientIds}
+            selectedIds={selectedIds}
+            loading={loading}
+            currentClientName={currentClientName}
+            checkinConfig={checkinConfig}
+            viewMode={viewMode}
+            onViewModeChange={setViewMode}
+            checkinLoading={checkinLoading}
+            checkCurrentLoading={checkCurrentLoading}
+            onAddAccountClick={() => setShowAddModal(true)}
+            onDeleteExpired={handleDeleteExpiredAccounts}
+            onImportMenu={handleShowImportInfo}
+            onExportMenu={handleShowExportInfo}
+            onImportClick={handleImportAccounts}
+            onSelectAll={handleSelectAll}
+            onBatchRefresh={handleBatchRefresh}
+            onCheckCurrent={handleCheckCurrent}
+            onCheckinAll={handleCheckinAll}
+            onSwitchSelected={handleSwitchAccount}
+            onBatchDelete={handleBatchDelete}
+            onSelect={handleSelectAccount}
+            onContextMenu={handleContextMenu}
+            onViewDetail={handleViewDetail}
+            onRefresh={handleManualRefreshToken}
+            onRenewClient={handleRenewClientToken}
+          />
         )}
 
         {currentPage === "settings" && (

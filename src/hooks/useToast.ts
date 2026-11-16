@@ -7,6 +7,12 @@ export interface ToastMessage {
   duration?: number;
 }
 
+/** Toast 类型（供各 hooks 参数签名共用） */
+export type ToastType = ToastMessage['type'];
+
+/** 各业务 hooks 通用的 addToast 函数签名 */
+export type AddToastFn = (type: ToastType, message: string, duration?: number) => void;
+
 export function useToast() {
   const [toasts, setToasts] = useState<ToastMessage[]>([]);
 

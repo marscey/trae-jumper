@@ -231,3 +231,14 @@ export interface CheckinConfig {
   /** 日志 watchdog 检查间隔（秒），最小 2 */
   log_watchdog_interval: number;
 }
+
+// ============ App 列表运行态 ============
+
+/** 账号卡片运行态：在 AccountBrief 基础上叠加懒加载的用量/积分数据 */
+export interface AccountWithUsage extends AccountBrief {
+  usage?: UsageSummary | null;
+  credits?: CreditSummary | null;
+}
+
+/** 账号列表视图模式 */
+export type ViewMode = "grid" | "list";
