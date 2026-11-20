@@ -475,6 +475,12 @@ pub async fn start_oauth_login_flow(
             "[OAuth-DEBUG] 账号已存在 → 更新 OAuth 凭证 旧_refresh_prefix={} 新_refresh_prefix={}",
             old_refresh, new_refresh
         );
+
+        // 在关 webview 之前读 cookies 存到 account（GetUserInfo cookies 路径需要）
+        if let Some(cookies) = read_oauth_webview_cookies(&app) {
+            existing.cookies = cookies;
+        }
+
         let account = existing.clone();
         manager
             .save_store()
@@ -518,6 +524,11 @@ pub async fn start_oauth_login_flow(
     account.avatar_url = avatar_url;
     account.region = region.clone();
     account.login_source = AccountLoginSource::WebviewOauth;
+
+    // 在关 webview 之前读 cookies 存到 account（GetUserInfo cookies 路径需要）
+    if let Some(cookies) = read_oauth_webview_cookies(&app) {
+        account.cookies = cookies;
+    }
 
     manager.store.accounts.push(account.clone());
     match manager.save_store() {
@@ -892,6 +903,47 @@ fn create_oauth_login_webview_inner(
         t0.elapsed().as_millis()
     );
     Ok(())
+}
+
+/// 从 OAuth 登录子 webview 读取 trae 相关 cookies（含 HttpOnly）。
+/// 复用 login.rs 的 read_child_webview_cookies 逻辑：
+/// 用底层 WKHTTPCookieStore.getAllCookies 绕过 JS document.cookie 跨域限制。
+/// 这些 cookies 是 passport 登录后写入的，用于后续 GetUserInfo / GetUserToken。
+pub fn read_oauth_webview_cookies(app: &AppHandle) -> Option<String> {
+    let wv = app.get_webview("trae-login-child")?;
+    let cookies = match wv.cookies() {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("[OAuth-cookies] 读取 webview cookies 失败: {}", e);
+            return None;
+        }
+    };
+    let trae_domains = [
+        "trae.cn", "trae.ai", "bytecdn.com", "volcengine.com",
+        "feishu.cn", "lanxin.com", "byteintl.net", "bytedance.com",
+    ];
+    let cookie_str: String = cookies
+        .iter()
+        .filter(|c| {
+            c.domain()
+                .map(|d| trae_domains.iter().any(|td| d.contains(td)))
+                .unwrap_or(false)
+        })
+        .map(|c| format!("{}={}", c.name(), c.value()))
+        .collect::<Vec<_>>()
+        .join("; ");
+
+    if cookie_str.is_empty() {
+        println!("[OAuth-cookies] 未从 webview 读到 trae 相关 cookies");
+        None
+    } else {
+        println!(
+            "[OAuth-cookies] 从 webview 读取到 {} 个 trae 相关 cookies（总 len={}）",
+            cookie_str.split("; ").count(),
+            cookie_str.len()
+        );
+        Some(cookie_str)
+    }
 }
 
 /// 关闭登录子 webview（不 abort server——server 由 cancel_rx/abort_current_oauth_server 负责）

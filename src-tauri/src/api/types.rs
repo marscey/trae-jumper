@@ -99,6 +99,9 @@ pub struct UserInfoResult {
     pub ai_region: Option<String>,
     #[serde(rename = "NonPlainTextEmail")]
     pub non_plain_text_email: Option<String>,
+    /// 脱敏手机号（如 "176******26"）
+    #[serde(rename = "NonPlainTextMobile")]
+    pub non_plain_text_mobile: Option<String>,
     #[serde(rename = "StoreCountry")]
     pub store_country: Option<String>,
 }

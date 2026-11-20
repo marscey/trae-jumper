@@ -354,6 +354,15 @@ pub struct Account {
     pub name: String,
     pub email: String,
     pub avatar_url: String,
+    /// 脱敏手机号（来自 GetUserInfo NonPlainTextMobile，如 "176******26"）
+    #[serde(default)]
+    pub mobile: Option<String>,
+    /// RFC3339 上次登录时间（来自 GetUserInfo LastLoginTime）
+    #[serde(default)]
+    pub last_login_time: Option<String>,
+    /// 个人简介（来自 GetUserInfo Description）
+    #[serde(default)]
+    pub description: Option<String>,
     pub cookies: String,
     pub jwt_token: Option<String>,
     pub token_expired_at: Option<String>,
@@ -444,6 +453,9 @@ impl Account {
             name,
             email,
             avatar_url: String::new(),
+            mobile: None,
+            last_login_time: None,
+            description: None,
             cookies,
             jwt_token: None,
             token_expired_at: None,

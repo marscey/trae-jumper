@@ -37,6 +37,12 @@ export interface Account {
   name: string;
   email: string;
   avatar_url: string;
+  /** 脱敏手机号（来自 GetUserInfo NonPlainTextMobile，如 "176******26"） */
+  mobile?: string | null;
+  /** RFC3339 上次登录时间（来自 GetUserInfo LastLoginTime） */
+  last_login_time?: string | null;
+  /** 个人简介（来自 GetUserInfo Description） */
+  description?: string | null;
   cookies: string;
   jwt_token: string | null;
   token_expired_at: string | null;

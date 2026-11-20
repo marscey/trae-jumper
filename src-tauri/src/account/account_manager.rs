@@ -369,6 +369,292 @@ impl AccountManager {
             .map(|a| a.email.clone())
     }
 
+    /// 刷新账号信息：尝试从远端获取最新展示字段 + 验证/续签 access_token。
+    ///
+    /// 鉴权知识（curl 实测结论）：
+    ///   - `/cloudide/api/v3/trae/GetUserInfo`（返回 screen_name/avatar/mobile 等完整脱敏字段）
+    ///     只认 **cookies**（sessionid），不认 `Authorization: Cloud-IDE-JWT`（返回 401 Code:20310）。
+    ///   - `/trae/api/v2/pay/user_current_entitlement_list`（返回 entitlement/plan/user_id）
+    ///     接受 OAuth cloudide JWT，可用来验证 token 有效性 + 拿基础字段。
+    ///
+    /// 三路策略：
+    ///   1) cookies 路径 → GetUserInfo → 拿完整展示字段（cookies 账号首选）
+    ///   2) OAuth ExchangeToken Refresh → 持久化新 token → entitlement 验证
+    ///      （OAuth Native / OAuth 注入账号；ExchangeToken 成功就把过期 token 续签了）
+    ///   3) jwt_token 兜底 → entitlement 验证 token 是否还有效
+    ///
+    /// 返回值：只要 entitlement 验证通过（或 cookies GetUserInfo 成功）就算成功。
+    /// OAuth 账号走 2 能拿到新 token 但拿不到展示字段（展示字段保留原值）。
+    pub async fn refresh_account_info(&mut self, account_id: &str) -> Result<Account> {
+        let account = self
+            .store
+            .accounts
+            .iter()
+            .find(|a| a.id == account_id)
+            .cloned()
+            .ok_or_else(|| anyhow!("账号不存在: {}", account_id))?;
+
+        println!(
+            "[INFO refresh_account_info] 账号={} name={} oauth_enabled={} cookies.len={} jwt_token.len={:?} has_refresh={}",
+            account.id,
+            account.name,
+            account.oauth_enabled,
+            account.cookies.len(),
+            account.jwt_token.as_ref().map(|t| t.len()),
+            account.oauth_refresh_token.is_some(),
+        );
+
+        // GetUserInfo 结果（只有 cookies 路径能拿到完整展示字段）
+        let mut user_info: Option<crate::api::UserInfoResult> = None;
+        // entitlement 结果（OAuth JWT 能通，用来验证 token 有效性 + 更新基础字段）
+        let mut entitlement_user_id: Option<String> = None;
+        let mut entitlement_ok = false;
+        let mut last_err: Option<String> = None;
+
+        // ── 路径 1: cookies → GetUserInfo（完整展示字段） ──
+        if !account.cookies.is_empty() {
+            match crate::api::TraeApiClient::new(&account.cookies) {
+                Ok(client) => match client.get_user_info().await {
+                    Ok(info) => {
+                        println!(
+                            "[INFO refresh_account_info] cookies 路径成功 screen_name={}",
+                            info.screen_name
+                        );
+                        user_info = Some(info);
+                    }
+                    Err(e) => {
+                        let msg = format!("cookies 路径失败: {}", e);
+                        println!("[WARN refresh_account_info] {}", msg);
+                        last_err = Some(msg);
+                    }
+                },
+                Err(e) => {
+                    let msg = format!("cookies client 构建失败: {}", e);
+                    println!("[WARN refresh_account_info] {}", msg);
+                    last_err = Some(msg);
+                }
+            }
+        } else {
+            println!("[INFO refresh_account_info] 无 cookies，跳过路径 1");
+        }
+
+        // ── 路径 2: OAuth ExchangeToken Refresh → entitlement 验证 ──
+        let has_oauth = account.oauth_enabled
+            || (account.has_been_injected && account.oauth_refresh_token.is_some());
+        if user_info.is_none() && has_oauth && account.oauth_refresh_token.is_some() {
+            let refresh_token = account.oauth_refresh_token.as_ref().unwrap();
+            let private_key = match account.oauth_private_key_pem.as_ref() {
+                Some(k) => k,
+                None => {
+                    let msg = "OAuth 账号缺少 oauth_private_key_pem，无法 refresh";
+                    println!("[WARN refresh_account_info] {}", msg);
+                    last_err = Some(msg.to_string());
+                    "" // 下面的 if 会因 private_key.is_empty() 而跳过
+                }
+            };
+            if !private_key.is_empty() {
+                let public_key = account.oauth_public_key_pem.as_deref().unwrap_or("");
+                let device_id = account.oauth_device_id.as_deref().unwrap_or("trae-jumper-device");
+                let machine_id = account
+                    .oauth_machine_id
+                    .as_deref()
+                    .unwrap_or("trae-jumper-machine");
+                let variant = crate::trae_app::current().clone();
+                let api_host = account
+                    .oauth_host
+                    .as_deref()
+                    .unwrap_or(variant.api_host);
+
+                println!(
+                    "[INFO refresh_account_info] 尝试 OAuth ExchangeToken Refresh host={}",
+                    api_host
+                );
+                match crate::oauth::exchange_refresh_token(
+                    &variant,
+                    api_host,
+                    refresh_token,
+                    device_id,
+                    machine_id,
+                    public_key,
+                    private_key,
+                )
+                .await
+                {
+                    Ok(token_result) => {
+                        let new_access = token_result.access_token.clone();
+                        println!(
+                            "[INFO refresh_account_info] OAuth Refresh 成功 access_token.len={}",
+                            new_access.len()
+                        );
+
+                        // 持久化新的 access_token（顺带修复过期问题）
+                        {
+                            let acc = self
+                                .store
+                                .accounts
+                                .iter_mut()
+                                .find(|a| a.id == account_id)
+                                .unwrap();
+                            acc.jwt_token = Some(new_access.clone());
+                            acc.token_expired_at = token_result.expired_at();
+                            acc.updated_at = chrono::Utc::now().timestamp();
+                            // refresh_token 是一次性的，ExchangeToken 成功后会发新的
+                            if !token_result.refresh_token.is_empty()
+                                && token_result.refresh_token != *refresh_token
+                            {
+                                acc.oauth_refresh_token =
+                                    Some(token_result.refresh_token.clone());
+                                acc.oauth_refresh_expired_at =
+                                    token_result.refresh_expired_at();
+                                println!(
+                                    "[INFO refresh_account_info] refresh_token 已轮换（new.len={}）",
+                                    token_result.refresh_token.len()
+                                );
+                            }
+                        }
+                        let _ = self.save_store();
+
+                        // 用新 access_token 调 entitlement 验证 token 有效
+                        // （GetUserInfo 不认 cloudide JWT，必须走 entitlement）
+                        match crate::api::TraeApiClient::new_with_token(&new_access) {
+                            Ok(client) => {
+                                match client.get_entitlement_list_v2_by_token().await {
+                                    Ok(ent) => {
+                                        entitlement_ok = true;
+                                        if let Some(pack) = ent.user_entitlement_pack_list.first() {
+                                            entitlement_user_id = Some(
+                                                pack.entitlement_base_info
+                                                    .user_id
+                                                    .clone(),
+                                            );
+                                        }
+                                        println!(
+                                            "[INFO refresh_account_info] OAuth Refresh 后 entitlement 验证通过 user_id={:?}",
+                                            entitlement_user_id
+                                        );
+                                    }
+                                    Err(e) => {
+                                        let msg = format!(
+                                            "OAuth Refresh 后 entitlement 失败: {}",
+                                            e
+                                        );
+                                        println!("[WARN refresh_account_info] {}", msg);
+                                        last_err = Some(msg);
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                let msg = format!("new_access client 构建失败: {}", e);
+                                println!("[WARN refresh_account_info] {}", msg);
+                                last_err = Some(msg);
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        let msg = format!("OAuth ExchangeToken Refresh 失败: {}", e);
+                        println!("[WARN refresh_account_info] {}", msg);
+                        last_err = Some(msg);
+                    }
+                }
+            }
+        }
+
+        // ── 路径 3: 残留 jwt_token → entitlement 验证 ──
+        // （兜底，非 OAuth 账号有有效 jwt_token 时验证是否还有效）
+        if user_info.is_none() && !entitlement_ok {
+            if let Some(token) = &account.jwt_token {
+                println!("[INFO refresh_account_info] 尝试 jwt_token entitlement 兜底验证");
+                match crate::api::TraeApiClient::new_with_token(token) {
+                    Ok(client) => {
+                        match client.get_entitlement_list_v2_by_token().await {
+                            Ok(ent) => {
+                                entitlement_ok = true;
+                                if let Some(pack) = ent.user_entitlement_pack_list.first() {
+                                    entitlement_user_id = Some(
+                                        pack.entitlement_base_info.user_id.clone(),
+                                    );
+                                }
+                                println!(
+                                    "[INFO refresh_account_info] jwt_token entitlement 兜底通过 user_id={:?}",
+                                    entitlement_user_id
+                                );
+                            }
+                            Err(e) => {
+                                let msg = format!("jwt_token entitlement 兜底失败: {}", e);
+                                println!("[WARN refresh_account_info] {}", msg);
+                                last_err = Some(msg);
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        let msg = format!("jwt_token client 构建失败: {}", e);
+                        println!("[WARN refresh_account_info] {}", msg);
+                        last_err = Some(msg);
+                    }
+                }
+            } else {
+                println!("[INFO refresh_account_info] 无 jwt_token，跳过路径 3");
+            }
+        }
+
+        // ── 汇总：有 user_info 就完整更新，否则至少 entitlement 验证通过 ──
+        if user_info.is_none() && !entitlement_ok {
+            return Err(anyhow!(
+                "刷新账号信息失败：{}\n账号 id={}，cookies.len={}，oauth_enabled={}，has_refresh={}，jwt_token={}",
+                last_err.unwrap_or_else(|| "所有路径均失败".to_string()),
+                account_id,
+                account.cookies.len(),
+                account.oauth_enabled,
+                account.oauth_refresh_token.is_some(),
+                account.jwt_token.as_ref().map(|t| t.len()).unwrap_or(0)
+            ));
+        }
+
+        let mut updated = account.clone();
+
+        // GetUserInfo 路径（cookies）→ 完整展示字段更新
+        if let Some(info) = user_info {
+            if !info.screen_name.is_empty() && info.screen_name != updated.name {
+                updated.name = info.screen_name.clone();
+            }
+            if !info.avatar_url.is_empty() && info.avatar_url != updated.avatar_url {
+                updated.avatar_url = info.avatar_url.clone();
+            }
+            if info.non_plain_text_mobile.is_some() {
+                updated.mobile = info.non_plain_text_mobile.clone();
+            }
+            if !info.last_login_time.is_empty() {
+                updated.last_login_time = Some(info.last_login_time.clone());
+            }
+            if !info.description.is_empty() {
+                updated.description = Some(info.description.clone());
+            }
+            if !info.region.is_empty() {
+                updated.region = info.region.clone();
+            }
+        }
+
+        // entitlement 路径 → user_id 可能从 entitlement 拿到（OAuth 账号常见情况）
+        if let Some(euid) = entitlement_user_id {
+            if !euid.is_empty() && euid != updated.user_id {
+                println!(
+                    "[INFO refresh_account_info] entitlement user_id {} → {}",
+                    updated.user_id, euid
+                );
+                updated.user_id = euid;
+            }
+        }
+
+        updated.updated_at = chrono::Utc::now().timestamp();
+
+        if let Some(a) = self.store.accounts.iter_mut().find(|a| a.id == account_id) {
+            *a = updated.clone();
+        }
+        self.save_store()?;
+
+        Ok(updated)
+    }
+
 }
 
 #[cfg(test)]

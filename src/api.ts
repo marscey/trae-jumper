@@ -249,6 +249,14 @@ export async function getAccount(accountId: string): Promise<Account> {
   });
 }
 
+// 从远端 GetUserInfo 刷新账号详情（昵称、头像、手机号、上次登录时间等）
+export async function refreshAccountInfo(accountId: string): Promise<Account> {
+  return safeInvoke("refresh_account_info", { accountId }, async () => {
+    // mock：返回原数据
+    return delay(await getAccount(accountId));
+  });
+}
+
 // 设置活跃账号
 export async function setActiveAccount(accountId: string): Promise<void> {
   return safeInvoke("switch_account", { accountId }, async () => delay(undefined));

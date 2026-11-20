@@ -259,29 +259,32 @@ impl TraeApiClient {
         Err(last_error)
     }
 
-    /// 尝试用 Token 调用 GetUserInfo 接口（依次尝试 UG / CN 端点）
-    async fn get_user_info_with_token(&self) -> Result<UserInfoResult> {
+    /// 尝试用 Token 调用 GetUserInfo 接口。
+    /// 注意：cloudide JWT 不认此接口（会返回 401 Code:20310），
+    /// 但 cookies 场景下的 web 会话可以通——主要保留给非 OAuth 账号兜底。
+    pub async fn get_user_info_with_token(&self) -> Result<UserInfoResult> {
         let headers = self.build_headers_token_only()?;
         let mut last_err = anyhow!("获取用户信息失败");
 
-        for base in [API_BASE_UG, API_BASE_CN] {
+        for base in [API_BASE_CN, API_BASE_UG, API_BASE_SG] {
             let url = format!("{}/cloudide/api/v3/trae/GetUserInfo", base);
-            let response = self
+            match self
                 .client
                 .post(&url)
                 .headers(headers.clone())
                 .json(&json!({"IfWebPage": true}))
                 .send()
-                .await;
-
-            match response {
-                Ok(resp) if resp.status().is_success() => {
-                    let data: GetUserInfoResponse = resp.json().await
-                        .map_err(|e| anyhow!("解析用户信息失败: {}", e))?;
-                    return Ok(data.result);
-                }
+                .await
+            {
                 Ok(resp) => {
-                    last_err = anyhow!("获取用户信息失败: {}", resp.status());
+                    let status = resp.status();
+                    let body = resp.text().await.unwrap_or_default();
+                    if status.is_success() {
+                        let data: GetUserInfoResponse = serde_json::from_str(&body)
+                            .map_err(|e| anyhow!("解析用户信息失败: {}", e))?;
+                        return Ok(data.result);
+                    }
+                    last_err = anyhow!("获取用户信息失败: {} - {}", status, &body[..body.len().min(150)]);
                 }
                 Err(e) => {
                     last_err = anyhow!("请求失败: {}", e);
@@ -960,8 +963,10 @@ impl TraeApiClient {
     // 国内版（CN / WORK）积分计费接口
     // ============================================================
 
-    /// (辅助) 通过 Token 拉一次 v2 版 entitlement list，只在积分账号下才用到
-    async fn get_entitlement_list_v2_by_token(&self) -> Result<EntitlementListResponse> {
+    /// 通过 Token 拉 v2 entitlement list（OAuth cloudide JWT 可通）。
+    /// 这是**唯一**接受 Authorization: Cloud-IDE-JWT 的用户态接口——
+    /// GetUserInfo (v3/trae) 只认 cookies，不认 JWT。
+    pub async fn get_entitlement_list_v2_by_token(&self) -> Result<EntitlementListResponse> {
         let headers = self.build_headers_token_only()?;
         let endpoints_order: Vec<&str> = if self.api_base == API_BASE_CN {
             vec![&self.api_base, API_BASE_SG, API_BASE_US]

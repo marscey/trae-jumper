@@ -75,6 +75,14 @@ async fn get_account(account_id: String, state: State<'_, AppState>) -> Result<A
     manager.get_account(&account_id).map_err(Into::into)
 }
 
+/// 从远端 GetUserInfo 刷新账号的昵称、头像、手机号、上次登录时间等展示字段。
+/// 返回刷新后的完整 Account。
+#[tauri::command]
+async fn refresh_account_info(account_id: String, state: State<'_, AppState>) -> Result<Account> {
+    let mut manager = state.account_manager.lock().await;
+    manager.refresh_account_info(&account_id).await.map_err(Into::into)
+}
+
 /// 切换账号（设置活跃账号并更新机器码）
 /// `force=true` 时跳过跨客户端活跃冲突检测（用户确认接受会中断另一客户端会话）
 #[tauri::command]
@@ -883,6 +891,7 @@ pub fn run() {
             remove_account,
             get_accounts,
             get_account,
+            refresh_account_info,
             switch_account,
             renew_token_and_write_client,
             get_account_usage,

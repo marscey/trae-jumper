@@ -10,6 +10,12 @@ interface DetailModalProps {
     name: string;
     email: string;
     avatar_url: string;
+    /** 脱敏手机号 */
+    mobile?: string | null;
+    /** RFC3339 上次登录时间 */
+    last_login_time?: string | null;
+    /** 个人简介 */
+    description?: string | null;
     plan_type: string;
     cookies?: string;
     jwt_token?: string | null;
@@ -36,6 +42,16 @@ export function DetailModal({ isOpen, onClose, account, usage, credits, checkinC
   const [restartOverrideSaving, setRestartOverrideSaving] = useState(false);
   // 乐观更新：用户点击按钮后立即更新此 state，让 UI 立刻反映变更
   const [pendingOverride, setPendingOverride] = useState<boolean | null>(null);
+  // 刷新账号信息
+  const [refreshingAccount, setRefreshingAccount] = useState(false);
+  const [refreshError, setRefreshError] = useState<string | null>(null);
+  const [localAccount, setLocalAccount] = useState<DetailModalProps["account"]>(account);
+
+  // 外部 account prop 变化（切换到新账号 / 父组件刷新）时同步
+  useEffect(() => {
+    setLocalAccount(account);
+    setRefreshError(null);
+  }, [account?.id, account?.name, account?.avatar_url, account?.mobile, account?.last_login_time, account?.description]);
 
   // account 变化（modal 打开新账号）时同步 pendingOverride
   useEffect(() => {
@@ -97,7 +113,8 @@ export function DetailModal({ isOpen, onClose, account, usage, credits, checkinC
   // 未打开或无账号 — 不渲染（hooks 已全部调用）
   if (!isOpen || !account) return null;
 
-  const acct = account;
+  // 优先用本地刷新后的副本，没有则用外部 prop
+  const acct = localAccount ?? account;
 
   // ===== 辅助函数 =====
   const formatDate = (timestamp: number) => {
@@ -153,6 +170,24 @@ export function DetailModal({ isOpen, onClose, account, usage, credits, checkinC
 
   const toggleGroup = (key: string) => {
     setExpandedGroups((prev) => ({ ...prev, [key]: !prev[key] }));
+  };
+
+  // 刷新账号信息：调后端 GetUserInfo 更新昵称/头像/手机号/上次登录时间
+  const handleRefreshAccount = async () => {
+    if (!account || refreshingAccount) return;
+    setRefreshingAccount(true);
+    setRefreshError(null);
+    try {
+      const updated = await api.refreshAccountInfo(account.id);
+      // 合并回 props 结构（后端返回完整 Account，前端 AccountBrief 上额外字段要对齐）
+      setLocalAccount((prev) => prev ? { ...prev, ...updated } : prev);
+      onAccountChanged?.();
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      setRefreshError(msg || "刷新失败，请稍后重试");
+    } finally {
+      setRefreshingAccount(false);
+    }
   };
 
   // ===== 渲染主函数（JSX 部分用 try/catch 做防御性保护）=====
@@ -226,7 +261,25 @@ export function DetailModal({ isOpen, onClose, account, usage, credits, checkinC
                   <div className="info-card-name">{displayName}</div>
                   <div className="info-card-email">{displayEmail}</div>
                 </div>
+                <button
+                  className={`detail-refresh-btn ${refreshingAccount ? "loading" : ""}`}
+                  onClick={handleRefreshAccount}
+                  disabled={refreshingAccount}
+                  title="从远端 GetUserInfo 刷新昵称 / 头像 / 手机号等"
+                >
+                  <svg viewBox="0 0 24  24" fill="none" stroke="currentColor" strokeWidth="2" width="14" height="14" className={refreshingAccount ? "spin" : ""}>
+                    <polyline points="23 4 23 10 17 10"/>
+                    <polyline points="1 20 1 14 7 14"/>
+                    <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>
+                  </svg>
+                  {refreshingAccount ? "刷新中" : "刷新"}
+                </button>
               </div>
+              {refreshError && (
+                <div style={{ padding: "6px 12px", margin: "0 0 10px", background: "rgba(244,67,54,0.1)", color: "#f44336", borderRadius: 6, fontSize: 12, border: "1px solid rgba(244,67,54,0.2)" }}>
+                  ⚠ {refreshError}
+                </div>
+              )}
               <div className="info-card-grid">
                 <div className="info-grid-item">
                   <span className="info-grid-label">套餐类型</span>
@@ -236,6 +289,19 @@ export function DetailModal({ isOpen, onClose, account, usage, credits, checkinC
                   <span className="info-grid-label">{resetOrExpireLabel}</span>
                   <span className="info-grid-value">{resetOrExpireTime ? formatDate(resetOrExpireTime) : "-"}</span>
                 </div>
+                {(acct.mobile || acct.last_login_time || acct.description) ? null : null}
+                {acct.mobile && (
+                  <div className="info-grid-item">
+                    <span className="info-grid-label">手机号</span>
+                    <span className="info-grid-value">{acct.mobile}</span>
+                  </div>
+                )}
+                {acct.last_login_time && (
+                  <div className="info-grid-item">
+                    <span className="info-grid-label">上次登录</span>
+                    <span className="info-grid-value">{formatRfc3339(acct.last_login_time)}</span>
+                  </div>
+                )}
                 <div className="info-grid-item">
                   <span className="info-grid-label">用户ID</span>
                   <div className="secret-value-wrap" style={{ gap: 6 }}>
@@ -277,6 +343,12 @@ export function DetailModal({ isOpen, onClose, account, usage, credits, checkinC
                   </div>
                 </div>
               </div>
+              {acct.description && acct.description.trim() ? (
+                <div className="info-desc-row">
+                  <span className="info-grid-label">简介</span>
+                  <span className="info-grid-value">{acct.description}</span>
+                </div>
+              ) : null}
             </div>
 
             {/* 积分体系 */}
