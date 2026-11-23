@@ -29,6 +29,8 @@ impl AccountManager {
             .ok_or_else(|| anyhow!("账号不存在"))?
             .clone();
 
+        self.require_trae(&account)?;
+
         // ===== Token 有效性守卫：写入客户端前先验证 Token 存活 =====
         let mut token = account.jwt_token.clone().filter(|t| !t.is_empty());
         if let Some(t) = token.as_deref() {

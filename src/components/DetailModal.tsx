@@ -1,5 +1,5 @@
 import { useState, useMemo, useEffect } from "react";
-import type { CreditSummary, UsageSummary, RewardCreditsEntry, CheckinConfig } from "../types";
+import type { CreditSummary, UsageSummary, RewardCreditsEntry, CheckinConfig, DoubaoQuotaView, DoubaoTimelineView } from "../types";
 import * as api from "../api";
 
 interface DetailModalProps {
@@ -17,6 +17,7 @@ interface DetailModalProps {
     /** 个人简介 */
     description?: string | null;
     plan_type: string;
+    platform?: "trae" | "doubao";
     cookies?: string;
     jwt_token?: string | null;
     token_expired_at?: string | null;
@@ -29,13 +30,14 @@ interface DetailModalProps {
   } | null;
   usage: UsageSummary | null;
   credits?: CreditSummary | null;
+  doubaoQuota?: DoubaoQuotaView | null;
   /** 全局签到配置（总开关状态，用于三态控件显示"跟随总开关"的实际值） */
   checkinConfig?: CheckinConfig | null;
   /** 设置变更后通知父组件刷新账号列表 */
   onAccountChanged?: () => void;
 }
 
-export function DetailModal({ isOpen, onClose, account, usage, credits, checkinConfig, onAccountChanged }: DetailModalProps) {
+export function DetailModal({ isOpen, onClose, account, usage, credits, doubaoQuota, checkinConfig, onAccountChanged }: DetailModalProps) {
   // ===== 所有 hooks 必须在组件最顶层调用（在任何条件 return 之前）=====
   const [copiedField, setCopiedField] = useState<string | null>(null);
   const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean>>({});
@@ -46,6 +48,11 @@ export function DetailModal({ isOpen, onClose, account, usage, credits, checkinC
   const [refreshingAccount, setRefreshingAccount] = useState(false);
   const [refreshError, setRefreshError] = useState<string | null>(null);
   const [localAccount, setLocalAccount] = useState<DetailModalProps["account"]>(account);
+  // 豆包消耗流水（D4）
+  const [timeline, setTimeline] = useState<DoubaoTimelineView | null>(null);
+  const [timelineLoading, setTimelineLoading] = useState(false);
+  const [timelineLoadingMore, setTimelineLoadingMore] = useState(false);
+  const [timelineError, setTimelineError] = useState<string | null>(null);
 
   // 外部 account prop 变化（切换到新账号 / 父组件刷新）时同步
   useEffect(() => {
@@ -57,6 +64,42 @@ export function DetailModal({ isOpen, onClose, account, usage, credits, checkinC
   useEffect(() => {
     if (account) setPendingOverride(account.restart_after_refresh_override ?? null);
   }, [account?.id]);
+
+  // 豆包账号：打开时拉取消耗流水（D4）
+  useEffect(() => {
+    if (!isOpen || !account || account.platform !== "doubao") {
+      setTimeline(null);
+      return;
+    }
+    let cancelled = false;
+    setTimelineLoading(true);
+    setTimelineError(null);
+    api
+      .getDoubaoTimeline(account.id)
+      .then((t) => { if (!cancelled) setTimeline(t); })
+      .catch((e) => { if (!cancelled) setTimelineError(e instanceof Error ? e.message : String(e)); })
+      .finally(() => { if (!cancelled) setTimelineLoading(false); });
+    return () => { cancelled = true; };
+  }, [isOpen, account?.id, account?.platform]);
+
+  // 豆包流水：加载下一页（cursor 翻页）
+  const loadMoreTimeline = async () => {
+    if (!account || !timeline?.has_more || !timeline.cursor || timelineLoadingMore) return;
+    setTimelineLoadingMore(true);
+    setTimelineError(null);
+    try {
+      const next = await api.getDoubaoTimeline(account.id, undefined, timeline.cursor || undefined);
+      setTimeline((prev) =>
+        prev
+          ? { ...prev, entries: [...prev.entries, ...next.entries], has_more: next.has_more, cursor: next.cursor }
+          : next
+      );
+    } catch (e) {
+      setTimelineError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setTimelineLoadingMore(false);
+    }
+  };
 
   // 奖励积分分组 — 仅聚合"签到奖励"，其他奖励（如老用户福利）保持独立
   const groupedRewards = useMemo(() => {
@@ -216,8 +259,10 @@ export function DetailModal({ isOpen, onClose, account, usage, credits, checkinC
 
   function renderModal() {
     const isCredits = !!credits?.is_credits_billing;
+    const isDoubao = acct.platform === "doubao";
 
     const planLabel = (() => {
+      if (isDoubao) return doubaoQuota?.plan_name || acct.plan_type || "免费体验";
       const raw = isCredits
         ? credits?.plan_name || "Credits"
         : usage?.plan_type || acct.plan_type || "Free";
@@ -351,8 +396,97 @@ export function DetailModal({ isOpen, onClose, account, usage, credits, checkinC
               ) : null}
             </div>
 
+            {/* 豆包额度与流水 */}
+            {isDoubao && (
+              <>
+                <div className="detail-section">
+                  <h3>额度总览</h3>
+                  <div className="credit-hero-top">
+                    <div className="credit-hero-value">
+                      <span className="credit-hero-icon">✦</span>
+                      <span className="credit-hero-left">{doubaoQuota?.total_remaining || "-"}</span>
+                    </div>
+                    <div className="credit-hero-used">
+                      <span className="credit-hero-used-label">套餐</span>
+                      <span className="credit-hero-used-value">{doubaoQuota?.plan_name || acct.plan_type || "免费体验"}</span>
+                    </div>
+                  </div>
+                  {doubaoQuota?.summaries?.map((s, i) => (
+                    <div className="detail-row" key={i}>
+                      <span className="detail-label">{s.title}</span>
+                      <span className="detail-value">{s.remaining_amount}</span>
+                    </div>
+                  ))}
+                </div>
+
+                <div className="detail-section">
+                  <h3>额度包明细</h3>
+                  {doubaoQuota && doubaoQuota.packages.length > 0 ? (
+                    doubaoQuota.packages.map((p, i) => {
+                      const total = Number(p.total_amount) || 0;
+                      const used = Number(p.used_amount) || 0;
+                      const depleted = total > 0 && (used >= total || p.used_percent >= 100);
+                      return (
+                      <div key={i} className={`credit-reward-item ${depleted ? 'is-empty' : ''}`}>
+                        <div className="credit-reward-info">
+                          <div className="credit-reward-name">{p.display_name}</div>
+                          <div className="credit-reward-meta">
+                            {p.end_time_ms ? `到期 ${formatDate(Math.floor(p.end_time_ms / 1000))}` : "无到期时间"}
+                            {p.sku_key ? ` · ${p.sku_key}` : ""}
+                          </div>
+                        </div>
+                        <div className="credit-reward-amount">
+                          已用 {p.used_amount_str} / 共 {p.total_amount_str}
+                          <span className="credit-reward-count"> · {p.used_percent}%</span>
+                        </div>
+                      </div>
+                      );
+                    })
+                  ) : (
+                    <p style={{ fontSize: 12, color: "var(--text-muted)" }}>暂无额度包</p>
+                  )}
+                </div>
+
+                <div className="detail-section">
+                  <h3>消耗记录（近 30 天）</h3>
+                  {timelineLoading ? (
+                    <p style={{ fontSize: 12, color: "var(--text-muted)" }}>加载中…</p>
+                  ) : timelineError ? (
+                    <p style={{ fontSize: 12, color: "#f44336" }}>⚠ {timelineError}</p>
+                  ) : timeline && timeline.entries.length > 0 ? (
+                    <>
+                      {timeline.entries.map((e, i) => (
+                        <div key={i} className="credit-reward-item">
+                          <div className="credit-reward-info">
+                            <div className="credit-reward-name">{e.display_name || "(无标题)"}</div>
+                            <div className="credit-reward-meta">
+                              {[e.model_display_name || "-", e.quota_source_display || "-", e.occurred_at_ms ? formatDate(Math.floor(e.occurred_at_ms / 1000)) : ""].filter(Boolean).join(" · ")}
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                      {timeline.has_more && (
+                        <div style={{ marginTop: 10, textAlign: "center" }}>
+                          <button
+                            type="button"
+                            onClick={loadMoreTimeline}
+                            disabled={timelineLoadingMore}
+                            style={{ fontSize: 12, padding: "6px 14px" }}
+                          >
+                            {timelineLoadingMore ? "加载中…" : "加载更多"}
+                          </button>
+                        </div>
+                      )}
+                    </>
+                  ) : (
+                    <p style={{ fontSize: 12, color: "var(--text-muted)" }}>暂无消耗记录</p>
+                  )}
+                </div>
+              </>
+            )}
+
             {/* 积分体系 */}
-            {isCredits && credits && (
+            {isCredits && credits && !isDoubao && (
               <>
                 {/* Hero: 总可用积分 + 子类别合并 */}
                 <div className="credit-hero">
@@ -497,7 +631,7 @@ export function DetailModal({ isOpen, onClose, account, usage, credits, checkinC
             {/* Token / Cookies — 移到最下面 */}
             {(acct.jwt_token || acct.cookies || acct.oauth_refresh_token) && (
               <div className="secret-card">
-                {acct.jwt_token && (
+                {!isDoubao && acct.jwt_token && (
                   <div className="secret-row">
                     <div className="secret-label">
                       <svg width="14" height="14" viewBox="0 0 24  24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -526,7 +660,7 @@ export function DetailModal({ isOpen, onClose, account, usage, credits, checkinC
                     </div>
                   </div>
                 )}
-                {acct.oauth_enabled && acct.oauth_refresh_token && (
+                {!isDoubao && acct.oauth_enabled && acct.oauth_refresh_token && (
                   <div className="secret-row">
                     <div className="secret-label">
                       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -597,13 +731,14 @@ export function DetailModal({ isOpen, onClose, account, usage, credits, checkinC
             )}
 
             {/* 账号级设置：续签重启策略 */}
+            {!isDoubao && (
             <div className="detail-section">
               <h3>续签重启策略</h3>
               <div className="detail-row detail-row-vertical">
                 <div className="detail-label" style={{ flexDirection: "column", alignItems: "flex-start", gap: "4px", minWidth: "auto" }}>
                   <span>自动续签后是否重启客户端</span>
                   <span style={{ fontSize: "11px", color: "var(--text-muted)", lineHeight: "1.5" }}>
-                    跟随总开关 = 使用全局"自动续签后重启 Trae 客户端"的设置；强制开/关 = 仅对此账号生效
+                    跟随总开关 = 使用全局"自动续签后重启 TRAE 客户端"的设置；强制开/关 = 仅对此账号生效
                   </span>
                 </div>
                 <div className="restart-override-group">
@@ -666,9 +801,10 @@ export function DetailModal({ isOpen, onClose, account, usage, credits, checkinC
                 </div>
               </div>
             </div>
+            )}
 
             {/* 旧配额体系（国际版） */}
-            {!isCredits && usage && (
+            {!isCredits && !isDoubao && usage && (
               <>
                 <div className="detail-section">
                   <h3>Fast Request</h3>

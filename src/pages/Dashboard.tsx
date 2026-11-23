@@ -1,6 +1,6 @@
 import { memo } from 'react';
 import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer } from 'recharts';
-import type { UsageSummary, CreditSummary } from "../types";
+import type { UsageSummary, CreditSummary, DoubaoQuotaView } from "../types";
 
 interface DashboardProps {
   accounts: Array<{
@@ -8,8 +8,10 @@ interface DashboardProps {
     name: string;
     email: string;
     plan_type: string;
+    platform?: "trae" | "doubao";
     usage?: UsageSummary | null;
     credits?: CreditSummary | null;
+    doubao_quota?: DoubaoQuotaView | null;
     is_current?: boolean;
   }>;
   currentClientName?: string;
@@ -33,35 +35,78 @@ export const Dashboard = memo(function Dashboard({ accounts, currentClientName }
   const hasCredits = accounts.some((a) => a.credits?.is_credits_billing);
 
   const stats = accounts.reduce((acc, a) => {
+    if (a.platform === "doubao") {
+      const q = a.doubao_quota;
+      const remaining = q?.total_remaining_number ?? 0;
+      const agg = q?.aggregate;
+      let used = 0, limit = 0, left = remaining;
+      if (agg && agg.total_amount > 0) {
+        used = agg.used_amount;
+        limit = agg.total_amount;
+        left = agg.left_amount;
+      }
+      acc.doubaoCount++;
+      acc.doubaoUsed += used;
+      acc.doubaoLimit += limit;
+      acc.doubaoLeft += left;
+      acc.totalUsed += used;
+      acc.totalLimit += limit;
+      acc.totalLeft += left;
+      if (remaining > 0) acc.activeAccounts++;
+      acc.quotaMap.set(`豆包·${q?.plan_name || a.plan_type || '免费体验'}`, (acc.quotaMap.get(`豆包·${q?.plan_name || a.plan_type || '免费体验'}`) || 0) + 1);
+      return acc;
+    }
+    let used = 0, limit = 0, left = 0;
     if (a.credits?.is_credits_billing) {
       const c = a.credits;
-      acc.totalUsed += (c.general?.used ?? 0) + (c.work_exclusive?.used ?? 0);
-      acc.totalLimit += (c.general?.total_limit ?? 0) + (c.work_exclusive?.total_limit ?? 0);
-      acc.totalLeft += (c.general?.left ?? 0) + (c.work_exclusive?.left ?? 0);
+      used = (c.general?.used ?? 0) + (c.work_exclusive?.used ?? 0);
+      limit = (c.general?.total_limit ?? 0) + (c.work_exclusive?.total_limit ?? 0);
+      left = (c.general?.left ?? 0) + (c.work_exclusive?.left ?? 0);
       const planName = c.plan_name || a.plan_type || 'Free';
       acc.quotaMap.set(planName, (acc.quotaMap.get(planName) || 0) + 1);
       if (c.total_available > 0) acc.activeAccounts++;
     } else if (a.usage) {
-      acc.totalUsed += a.usage.fast_request_used + a.usage.extra_fast_request_used;
-      acc.totalLimit += a.usage.fast_request_limit + a.usage.extra_fast_request_limit;
-      acc.totalLeft += a.usage.fast_request_left + a.usage.extra_fast_request_left;
+      used = a.usage.fast_request_used + a.usage.extra_fast_request_used;
+      limit = a.usage.fast_request_limit + a.usage.extra_fast_request_limit;
+      left = a.usage.fast_request_left + a.usage.extra_fast_request_left;
       if (a.usage.fast_request_left > 0) acc.activeAccounts++;
       const planType = a.usage.plan_type || 'Free';
       acc.quotaMap.set(planType, (acc.quotaMap.get(planType) || 0) + 1);
     } else {
       acc.quotaMap.set(a.plan_type || 'Free', (acc.quotaMap.get(a.plan_type) || 0) + 1);
     }
+    acc.traeCount++;
+    acc.traeUsed += used;
+    acc.traeLimit += limit;
+    acc.traeLeft += left;
+    acc.totalUsed += used;
+    acc.totalLimit += limit;
+    acc.totalLeft += left;
     return acc;
   }, {
     activeAccounts: 0,
     totalUsed: 0,
     totalLimit: 0,
     totalLeft: 0,
+    traeCount: 0,
+    traeUsed: 0,
+    traeLimit: 0,
+    traeLeft: 0,
+    doubaoCount: 0,
+    doubaoUsed: 0,
+    doubaoLimit: 0,
+    doubaoLeft: 0,
     quotaMap: new Map<string, number>()
   });
 
-  const { activeAccounts, totalUsed, totalLimit, totalLeft, quotaMap } = stats;
+  const {
+    activeAccounts, totalUsed, totalLimit, totalLeft, quotaMap,
+    traeCount, traeUsed, traeLimit, traeLeft,
+    doubaoCount, doubaoUsed, doubaoLimit, doubaoLeft,
+  } = stats;
   const usagePercent = totalLimit > 0 ? Math.round((totalUsed / totalLimit) * 100) : 0;
+  const traeAvg = traeCount > 0 ? traeLeft / traeCount : 0;
+  const doubaoAvg = doubaoCount > 0 ? doubaoLeft / doubaoCount : 0;
 
   const pieData = [
     { name: '已使用', value: totalUsed, color: '#0ea5e9' },
@@ -106,9 +151,12 @@ export const Dashboard = memo(function Dashboard({ accounts, currentClientName }
         <div className="stat-card gradient-purple">
           <div className="stat-card-content">
             <div className="stat-card-info">
-              <span className="stat-card-label">{hasCredits ? '总积分' : '总配额'}</span>
+              <span className="stat-card-label">总额度</span>
               <span className="stat-card-value">{hasCredits ? formatCredits(totalLimit) : Math.round(totalLimit)}</span>
-              <span className="stat-card-change">{hasCredits ? '积分合计' : 'Fast Requests'}</span>
+              <div className="stat-card-split">
+                {traeCount > 0 && <span>Trae 积分 {formatCredits(traeLimit)}</span>}
+                {doubaoCount > 0 && <span>豆包额度 {Math.round(doubaoLimit)}</span>}
+              </div>
             </div>
             <div className="stat-card-icon">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -123,7 +171,10 @@ export const Dashboard = memo(function Dashboard({ accounts, currentClientName }
             <div className="stat-card-info">
               <span className="stat-card-label">已使用</span>
               <span className="stat-card-value">{hasCredits ? formatCredits(totalUsed) : Math.round(totalUsed)}</span>
-              <span className="stat-card-change">{usagePercent}% 使用率</span>
+              <div className="stat-card-split">
+                {traeCount > 0 && <span>Trae 已用 {formatCredits(traeUsed)}</span>}
+                {doubaoCount > 0 && <span>豆包已用 {Math.round(doubaoUsed)}</span>}
+              </div>
             </div>
             <div className="stat-card-icon">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -138,7 +189,10 @@ export const Dashboard = memo(function Dashboard({ accounts, currentClientName }
             <div className="stat-card-info">
               <span className="stat-card-label">剩余可用</span>
               <span className="stat-card-value">{hasCredits ? formatCredits(totalLeft) : Math.round(totalLeft)}</span>
-              <span className="stat-card-change">{100 - usagePercent}% 剩余</span>
+              <div className="stat-card-split">
+                {traeCount > 0 && <span>Trae 剩余 {formatCredits(traeLeft)}</span>}
+                {doubaoCount > 0 && <span>豆包剩余 {Math.round(doubaoLeft)}</span>}
+              </div>
             </div>
             <div className="stat-card-icon">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -153,7 +207,10 @@ export const Dashboard = memo(function Dashboard({ accounts, currentClientName }
             <div className="stat-card-info">
               <span className="stat-card-label">平均剩余</span>
               <span className="stat-card-value">{hasCredits ? formatCredits(totalAccounts > 0 ? totalLeft / totalAccounts : 0) : Math.round(totalAccounts > 0 ? totalLeft / totalAccounts : 0)}</span>
-              <span className="stat-card-change">每账号</span>
+              <div className="stat-card-split">
+                {traeCount > 0 && <span>Trae 平均 {formatCredits(traeAvg)}</span>}
+                {doubaoCount > 0 && <span>豆包平均 {Math.round(doubaoAvg)}</span>}
+              </div>
             </div>
             <div className="stat-card-icon">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -238,55 +295,6 @@ export const Dashboard = memo(function Dashboard({ accounts, currentClientName }
           </div>
         </div>
       </div>
-
-      {accounts.length > 0 && (
-        <>
-          <div className="accounts-preview">
-            <div className="preview-header">
-              <h3>账号概览</h3>
-              <span className="preview-count">{accounts.length} 个账号</span>
-            </div>
-            <div className="preview-list">
-              {accounts.slice(0, 4).map((account) => {
-                const isCredits = !!account.credits?.is_credits_billing;
-                let used = 0, limit = 0;
-                if (isCredits && account.credits) {
-                  used = (account.credits.general?.used ?? 0) + (account.credits.work_exclusive?.used ?? 0);
-                  limit = (account.credits.general?.total_limit ?? 0) + (account.credits.work_exclusive?.total_limit ?? 0);
-                } else if (account.usage) {
-                  used = account.usage.fast_request_used + account.usage.extra_fast_request_used;
-                  limit = account.usage.fast_request_limit + account.usage.extra_fast_request_limit;
-                }
-                const percent = limit > 0 ? Math.round((used / limit) * 100) : 0;
-
-                return (
-                  <div key={account.id} className="preview-item">
-                    <div className="preview-avatar">
-                      {(account.email || account.name || '?').charAt(0).toUpperCase()}
-                    </div>
-                    <div className="preview-info">
-                      <span className="preview-name">{account.email || account.name || 'Unknown'}</span>
-                      <span className="preview-plan">{isCredits ? (account.credits?.plan_name || '积分') : (account.usage?.plan_type || 'Free')}</span>
-                    </div>
-                    <div className="preview-usage">
-                      <div className="preview-progress">
-                        <div
-                          className="preview-progress-fill"
-                          style={{
-                            width: `${percent}%`,
-                            background: percent > 80 ? '#ef4444' : percent > 50 ? '#f59e0b' : '#10b981'
-                          }}
-                        />
-                      </div>
-                      <span className="preview-percent">{percent}%</span>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-        </>
-      )}
 
       {accounts.length === 0 && (
         <div className="dashboard-empty">

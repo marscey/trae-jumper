@@ -1,7 +1,7 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { UpdateBanner } from "./components/UpdateBanner";
 import { Sidebar } from "./components/Sidebar";
+import { UpdateModal } from "./components/UpdateModal";
 import { AddAccountModal } from "./components/AddAccountModal";
 import { ContextMenu } from "./components/ContextMenu";
 import { DetailModal } from "./components/DetailModal";
@@ -31,7 +31,7 @@ import "./App.css";
  * - 数据层：useAccountsData（账号列表/积分/签到状态 + 定时刷新）
  * - 弹窗层：useAppModals（全局弹窗状态）
  * - 操作层：useTokenActions / useCheckinActions / useAccountActions / useImportExport
- * - 自更新：useAutoUpdate（后台检查 + 静默下载安装）
+ * - 自更新：useAutoUpdate（后台轮询 → Sidebar 图标提示 → 用户确认后下载安装）
  */
 function App() {
   // 页面导航与客户端信息
@@ -40,6 +40,8 @@ function App() {
   const [currentClientName, setCurrentClientName] = useState<string>("");
   const [currentLoginUrl, setCurrentLoginUrl] = useState<string>("");
   const [showAddModal, setShowAddModal] = useState(false);
+  /** 是否显示更新弹窗（Sidebar 图标 / About 手动检查触发） */
+  const [showUpdateModal, setShowUpdateModal] = useState(false);
 
   const { toasts, addToast, removeToast } = useToast();
 
@@ -92,7 +94,14 @@ function App() {
   }, [setCheckinConfig]);
 
   // ==== 自更新 ====
-  const { autoUpdate, setAutoUpdate, handleRestartForUpdate } = useAutoUpdate(addToast);
+  const {
+    autoUpdate,
+    skipVersion,
+    startDownload,
+    handleRestartForUpdate,
+    handleManualCheck,
+    dismissUpdate,
+  } = useAutoUpdate(addToast);
 
   // ==== 弹窗层 ====
   const {
@@ -110,6 +119,9 @@ function App() {
     setUpdateTokenModal,
   } = useAppModals();
 
+  // ==== 平台过滤 tab（纯 state，声明在所有依赖它的 hook 之前） ====
+  const [platformFilter, setPlatformFilter] = useState<"trae" | "doubao">("trae");
+
   // ==== 操作层 ====
   const {
     refreshingIds,
@@ -125,20 +137,6 @@ function App() {
     markTokenExpired,
     addToast,
     setUpdateTokenModal,
-  });
-
-  const {
-    checkinLoading,
-    handleCheckin,
-    handleCheckinAll,
-    handleViewCheckinHeaders,
-  } = useCheckinActions({
-    accounts,
-    setAccounts,
-    addToast,
-    setConfirmModal,
-    setInfoModal,
-    refreshAccount: handleRefreshAccount,
   });
 
   const {
@@ -169,6 +167,41 @@ function App() {
     setDetailAccount,
     setContextMenu,
     currentClientName,
+    platformFilter,
+    refreshAccount: handleRefreshAccount,
+  });
+
+  // ==== 平台过滤 tab（依赖 setSelectedIds，所以放在 useAccountActions 之后） ====
+  // 切换 tab 时清空选中（不同 tab 账号集不同）
+  const handlePlatformFilterChange = useCallback(
+    (p: "trae" | "doubao") => {
+      if (p !== platformFilter) {
+        setPlatformFilter(p);
+        setSelectedIds(new Set());
+      }
+    },
+    [platformFilter, setSelectedIds]
+  );
+
+  const {
+    checkinLoading,
+    handleCheckin,
+    handleCheckinAll,
+    handleDoubaoCheckin,
+    handleViewCheckinHeaders,
+  } = useCheckinActions({
+    accounts,
+    setAccounts,
+    addToast,
+    setConfirmModal,
+    setInfoModal,
+    platformFilter,
+    scopedSelectedIds: Array.from(selectedIds).filter((id) => {
+      const scoped = accounts.filter((a) =>
+        platformFilter === "doubao" ? a.platform === "doubao" : a.platform !== "doubao"
+      );
+      return scoped.some((a) => a.id === id);
+    }),
     refreshAccount: handleRefreshAccount,
   });
 
@@ -189,7 +222,12 @@ function App() {
 
   return (
     <div className="app">
-      <Sidebar currentPage={currentPage} onNavigate={setCurrentPage} />
+      <Sidebar
+        currentPage={currentPage}
+        onNavigate={setCurrentPage}
+        updateStatus={autoUpdate?.status}
+        onOpenUpdate={() => setShowUpdateModal(true)}
+      />
 
       <div className="app-content">
         {error && (
@@ -197,16 +235,6 @@ function App() {
             {error}
             <button onClick={() => setError(null)}>×</button>
           </div>
-        )}
-
-        {autoUpdate && (
-          <UpdateBanner
-            status={autoUpdate.status}
-            version={autoUpdate.version}
-            percent={autoUpdate.percent}
-            onRestart={handleRestartForUpdate}
-            onDismiss={() => setAutoUpdate(null)}
-          />
         )}
 
         {currentPage === "dashboard" && (
@@ -227,6 +255,8 @@ function App() {
             onViewModeChange={setViewMode}
             checkinLoading={checkinLoading}
             checkCurrentLoading={checkCurrentLoading}
+            platformFilter={platformFilter}
+            onPlatformFilterChange={handlePlatformFilterChange}
             onAddAccountClick={() => setShowAddModal(true)}
             onDeleteExpired={handleDeleteExpiredAccounts}
             onImportMenu={handleShowImportInfo}
@@ -266,7 +296,15 @@ function App() {
                 <p>应用程序信息</p>
               </div>
             </header>
-            <About />
+            <About
+              onRequestCheckUpdate={async () => {
+                const info = await handleManualCheck();
+                if (info) {
+                  setShowUpdateModal(true);
+                }
+                return info;
+              }}
+            />
           </>
         )}
       </div>
@@ -354,6 +392,10 @@ function App() {
             handleCheckin(contextMenu.accountId);
             setContextMenu(null);
           }}
+          onDoubaoCheckin={() => {
+            handleDoubaoCheckin(contextMenu.accountId);
+            setContextMenu(null);
+          }}
           onViewCheckinHeaders={() => {
             handleViewCheckinHeaders(contextMenu.accountId);
             setContextMenu(null);
@@ -364,6 +406,7 @@ function App() {
           }}
           isCurrent={accounts.find(a => a.id === contextMenu.accountId)?.is_current || false}
           showClaimGift={!accounts.find(a => a.id === contextMenu.accountId)?.credits?.is_credits_billing}
+          isDoubao={accounts.find(a => a.id === contextMenu.accountId)?.platform === "doubao"}
         />
       )}
 
@@ -385,6 +428,7 @@ function App() {
         account={detailAccount}
         usage={detailAccount?.usage || null}
         credits={detailAccount?.credits || null}
+        doubaoQuota={detailAccount?.doubao_quota || null}
         checkinConfig={checkinConfig}
         onAccountChanged={async () => {
           await refreshAccountsData();
@@ -456,6 +500,31 @@ function App() {
             </div>
           </div>
         </div>
+      )}
+
+      {/* 更新弹窗：available → 立即更新/跳过；downloading → 进度条；ready → 立即重启 */}
+      {autoUpdate && showUpdateModal && (
+        <UpdateModal
+          isOpen
+          version={autoUpdate.version}
+          date={autoUpdate.date}
+          notes={autoUpdate.notes}
+          status={autoUpdate.status}
+          percent={autoUpdate.percent}
+          onUpdate={() => startDownload()}
+          onSkip={() => {
+            skipVersion(autoUpdate.version);
+            setShowUpdateModal(false);
+          }}
+          onRestart={handleRestartForUpdate}
+          onClose={() => {
+            setShowUpdateModal(false);
+            // 如果是 ready 状态，关闭只是临时收起，autoUpdate 还在；
+            // 如果是 available，关闭也是临时收起，Sidebar 红点还在提醒
+            // dismissUpdate 不在这里调用，避免误删更新状态
+            void dismissUpdate; // 保留引用避免 eslint unused
+          }}
+        />
       )}
     </div>
   );

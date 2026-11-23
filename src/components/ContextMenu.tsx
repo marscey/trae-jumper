@@ -11,10 +11,12 @@ interface ContextMenuProps {
   onSwitchAccount: () => void;
   onClaimGift: () => void;
   onCheckin: () => void;
+  onDoubaoCheckin: () => void;
   onViewCheckinHeaders: () => void;
   onDelete: () => void;
   isCurrent?: boolean; // 是否是当前使用的账号
   showClaimGift?: boolean; // 是否显示"获取礼包"（CN/WORK 积分体系下隐藏）
+  isDoubao?: boolean; // 豆包账号：隐藏 Token/切换/签到等 Trae 专属操作
 }
 
 export function ContextMenu({
@@ -28,10 +30,12 @@ export function ContextMenu({
   onSwitchAccount,
   onClaimGift,
   onCheckin,
+  onDoubaoCheckin,
   onViewCheckinHeaders,
   onDelete,
   isCurrent = false,
   showClaimGift = true,
+  isDoubao = false,
 }: ContextMenuProps) {
   const menuRef = useRef<HTMLDivElement>(null);
 
@@ -74,36 +78,52 @@ export function ContextMenu({
           <span className="icon">👁</span>
           查看详情
         </div>
-        <div className="context-menu-item" onClick={onViewUsage}>
-          <span className="icon">📊</span>
-          账号用量
-        </div>
+        {!isDoubao && (
+          <div className="context-menu-item" onClick={onViewUsage}>
+            <span className="icon">📊</span>
+            账号用量
+          </div>
+        )}
         <div className="context-menu-item" onClick={onRefresh}>
           <span className="icon">🔄</span>
           刷新数据
         </div>
-        <div className="context-menu-item" onClick={onUpdateToken}>
-          <span className="icon">🔐</span>
-          更新 Token
-        </div>
-        <div
-          className={`context-menu-item ${isCurrent ? "disabled" : ""}`}
-          onClick={isCurrent ? undefined : onSwitchAccount}
-          title={isCurrent ? "当前已是此账号" : "切换到此账号"}
-        >
-          <span className="icon">{isCurrent ? "✓" : "🔀"}</span>
-          {isCurrent ? "当前使用中" : "切换账号"}
-        </div>
-        <div className="context-menu-item" onClick={onCheckin}>
-          <span className="icon">📅</span>
-          每日签到
-        </div>
-        <div className="context-menu-item" onClick={onViewCheckinHeaders}>
-          <span className="icon">🧾</span>
-          签到请求头
-        </div>
+        {!isDoubao && (
+          <div className="context-menu-item" onClick={onUpdateToken}>
+            <span className="icon">🔐</span>
+            更新 Token
+          </div>
+        )}
+        {!isDoubao && (
+          <div
+            className={`context-menu-item ${isCurrent ? "disabled" : ""}`}
+            onClick={isCurrent ? undefined : onSwitchAccount}
+            title={isCurrent ? "当前已是此账号" : "切换到此账号"}
+          >
+            <span className="icon">{isCurrent ? "✓" : "🔀"}</span>
+            {isCurrent ? "当前使用中" : "切换账号"}
+          </div>
+        )}
+        {!isDoubao && (
+          <div className="context-menu-item" onClick={onCheckin}>
+            <span className="icon">📅</span>
+            每日签到
+          </div>
+        )}
+        {isDoubao && (
+          <div className="context-menu-item" onClick={onDoubaoCheckin}>
+            <span className="icon">📅</span>
+            豆包签到
+          </div>
+        )}
+        {!isDoubao && (
+          <div className="context-menu-item" onClick={onViewCheckinHeaders}>
+            <span className="icon">🧾</span>
+            签到请求头
+          </div>
+        )}
         <div className="context-menu-divider" />
-        {showClaimGift && (
+        {showClaimGift && !isDoubao && (
           <div className="context-menu-item" onClick={onClaimGift}>
             <span className="icon">🎁</span>
             获取礼包

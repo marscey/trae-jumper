@@ -54,13 +54,15 @@ export function CheckinSection({ cfg, onToast }: CheckinSectionProps) {
   return (
     <>
     <div className="settings-section">
-      <h3>签到配置</h3>
+      <h3>签到配置 <span className="section-badge shared">所有账号</span></h3>
 
       {/* 设备 ID 生成策略 */}
       <div className="setting-item" style={{ flexDirection: "column", alignItems: "stretch", gap: "10px" }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "16px" }}>
           <div className="setting-info">
-            <div className="setting-label">设备 ID 生成策略</div>
+            <div className="setting-label">
+              设备 ID 生成策略 <span className="section-badge trae" style={{ fontSize: 11, padding: "3px 7px", marginLeft: 4, fontWeight: 700, borderRadius: 5 }}>TRAE账号专属</span>
+            </div>
             <div className="setting-desc">
               策略一（默认）：读取本机真实设备 ID 前 13 位 + 后 3 位随机，100% 合法
               <br />
@@ -207,7 +209,9 @@ export function CheckinSection({ cfg, onToast }: CheckinSectionProps) {
       {/* 设备型号池 */}
       <div className="setting-item" style={{ flexDirection: "column", alignItems: "flex-start" }}>
         <div className="setting-info" style={{ marginBottom: "8px" }}>
-          <div className="setting-label">设备型号池</div>
+          <div className="setting-label">
+            设备型号池 <span className="section-badge trae" style={{ fontSize: 11, padding: "3px 7px", marginLeft: 4, fontWeight: 700, borderRadius: 5 }}>TRAE账号专属</span>
+          </div>
           <div className="setting-desc">预设的虚拟设备型号，每个账号添加时随机分配</div>
         </div>
         <div style={{ width: "100%", display: "flex", flexDirection: "column", gap: "14px" }}>
@@ -264,7 +268,9 @@ export function CheckinSection({ cfg, onToast }: CheckinSectionProps) {
       {/* 重置所有签到设备 */}
       <div className="setting-item" style={{ borderTop: "1px solid var(--border-color)", paddingTop: "16px" }}>
         <div className="setting-info">
-          <div className="setting-label">重置所有签到设备</div>
+          <div className="setting-label">
+            重置所有签到设备 <span className="section-badge trae" style={{ fontSize: 11, padding: "3px 7px", marginLeft: 4, fontWeight: 700, borderRadius: 5 }}>TRAE账号专属</span>
+          </div>
           <div className="setting-desc">为所有账号重新分配一套签到虚拟设备（用于修复旧策略生成的 9074 签到失败，或切换策略后应用新策略）</div>
         </div>
         <button className="setting-btn" onClick={handleResetAllCheckinDevices}>重置</button>

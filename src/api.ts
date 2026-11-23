@@ -9,6 +9,9 @@ import type {
   CheckinAllStatusItem,
   CreditSummary,
   DeviceIdStrategy,
+  DoubaoCheckinView,
+  DoubaoQuotaView,
+  DoubaoTimelineView,
   UsageSummary,
   UsageEventsResponse,
   TraeAppInfo,
@@ -35,6 +38,7 @@ const MOCK_ACCOUNTS: AccountBrief[] = [
     email: "mock.free@trae.cn",
     avatar_url: "",
     plan_type: "Free",
+    platform: "trae",
     is_active: true,
     created_at: Date.now() - 1000 * 60 * 60 * 24 * 10,
     machine_id: "MOCK-MACHINE",
@@ -55,6 +59,7 @@ const MOCK_ACCOUNTS: AccountBrief[] = [
     email: "mock.lite@trae.cn",
     avatar_url: "",
     plan_type: "Lite",
+    platform: "trae",
     is_active: true,
     created_at: Date.now() - 1000 * 60 * 60 * 24 * 50,
     machine_id: "MOCK-MACHINE",
@@ -75,6 +80,7 @@ const MOCK_ACCOUNTS: AccountBrief[] = [
     email: "mock.intl@trae.ai",
     avatar_url: "",
     plan_type: "Pro",
+    platform: "trae",
     is_active: true,
     created_at: Date.now() - 1000 * 60 * 60 * 24 * 100,
     machine_id: "MOCK-MACHINE",
@@ -293,9 +299,116 @@ export async function getAccountCredits(accountId: string): Promise<CreditSummar
   });
 }
 
+// ============ 豆包账号体系 ============
+
+// 通过 Cookie 新增豆包账号（D1 校验 + D2 初始快照）
+export async function addDoubaoAccount(cookies: string): Promise<Account> {
+  return safeInvoke("add_doubao_account", { cookies }, async () => delay({
+    id: "db-" + Math.random().toString(36).slice(2, 8),
+    name: "Doubao 账号",
+    email: "",
+    avatar_url: "",
+    cookies,
+    jwt_token: null,
+    token_expired_at: null,
+    last_cookie_renewal_at: null,
+    user_id: "db-u",
+    tenant_id: "",
+    region: "CN",
+    plan_type: "免费体验",
+    created_at: Date.now(),
+    updated_at: Date.now(),
+    is_active: true,
+    machine_id: null,
+    platform: "doubao",
+  }));
+}
+
+// 获取豆包额度概览（D2，归一化视图）
+export async function getDoubaoQuota(accountId: string): Promise<DoubaoQuotaView> {
+  return safeInvoke("get_doubao_quota", { accountId }, async () => delay({
+    plan_name: "免费体验",
+    plan_short_name: "免费",
+    total_remaining: "2,526",
+    total_remaining_number: 2526,
+    has_active_subscription: false,
+    summaries: [{ category: 3, title: "赠送", remaining_amount: "2,526", remaining_number: 2526 }],
+    packages: [],
+    service_current_time_ms: Date.now(),
+  }));
+}
+
+// 获取豆包消耗流水（D4）
+export async function getDoubaoTimeline(
+  accountId: string,
+  category?: number,
+  cursor?: string,
+  pageSize?: number
+): Promise<DoubaoTimelineView> {
+  return safeInvoke("get_doubao_timeline", { accountId, category, cursor, pageSize }, async () => delay({
+    categories: [3, 7],
+    consumption_column_title: "额度消耗",
+    window_start_time_ms: null,
+    window_end_time_ms: null,
+    has_more: false,
+    cursor: null,
+    entries: [],
+  }));
+}
+
+// 打开豆包浏览器登录窗口（纯 Cookie 会话）
+export async function startDoubaoBrowserLogin(): Promise<void> {
+  return safeInvoke("start_doubao_browser_login", undefined, async () => delay(undefined));
+}
+
+// 应用豆包登录窗口当前 Cookie 新增账号（成功后关闭登录窗口）
+export async function applyLoginWebviewNewDoubaoAccount(): Promise<string> {
+  return safeInvoke("apply_login_webview_new_doubao_account", undefined, async () => delay("ok"));
+}
+
+// 查询豆包签到状态（D10 checkin 接口，幂等重复调用安全）
+export async function doubaoCheckinStatus(accountId: string): Promise<DoubaoCheckinView> {
+  return safeInvoke("doubao_checkin_status", { accountId }, async () => delay({
+    checked_in: false,
+    checkin_date: null,
+    continuous_days: 0,
+    reward_amount: 0,
+    reward_code: null,
+    reward_type: null,
+  }));
+}
+
+// 执行豆包签到（D10 checkin 接口本身即 claim，幂等）
+export async function doubaoCheckin(accountId: string): Promise<DoubaoCheckinView> {
+  return safeInvoke("doubao_checkin", { accountId }, async () => delay({
+    checked_in: true,
+    checkin_date: new Date().toISOString().slice(0, 10),
+    continuous_days: 1,
+    reward_amount: 400,
+    reward_code: "quota_grant",
+    reward_type: "quota_grant",
+  }));
+}
+
+// 批量签到所有豆包账号（串行）
+export async function doubaoCheckinAll(): Promise<DoubaoCheckinView[]> {
+  return safeInvoke("doubao_checkin_all", undefined, async () => delay([]));
+}
+
+// 批量查询所有豆包账号签到状态（串行，失败账号返回 [accountId, null]）
+export async function doubaoCheckinStatusAll(): Promise<[string, DoubaoCheckinView | null][]> {
+  return safeInvoke("doubao_checkin_status_all", undefined, async () => delay([]));
+}
+
+// 从本机豆包桌面客户端导入当前登录账号（客户端登录态才具备签到资格）
+export async function doubaoImportFromClient(): Promise<AccountBrief> {
+  return safeInvoke("doubao_import_from_client", undefined, async () => {
+    throw new Error("浏览器预览模式无法读取豆包客户端登录态");
+  });
+}
+
 // 更新账号 Token
-export async function updateAccountToken(accountId: string, token: string): Promise<UsageSummary> {
-  return safeInvoke("update_account_token", { accountId, token }, async () => delay(MOCK_USAGE_3));
+export async function updateAccountToken(accountId: string, token: string): Promise<UsageSummary> {  return safeInvoke("update_account_token", { accountId, token }, async () => delay(MOCK_USAGE_3));
 }
 
 // 刷新 Token
@@ -401,17 +514,17 @@ export async function bindAccountMachineId(accountId: string): Promise<string> {
 
 // ============ Trae IDE 机器码相关 API ============
 
-// 获取 Trae IDE 的机器码
+// 获取 TRAE IDE 的机器码
 export async function getTraeMachineId(): Promise<string> {
   return safeInvoke("get_trae_machine_id", undefined, async () => delay("MOCK-TRAE-MACHINE"));
 }
 
-// 设置 Trae IDE 的机器码
+// 设置 TRAE IDE 的机器码
 export async function setTraeMachineId(machineId: string): Promise<void> {
   return safeInvoke("set_trae_machine_id", { machineId }, async () => delay(undefined));
 }
 
-// 获取 Trae 客户端的本机真实 device-id（ahanet/tt_net_config.config）
+// 获取 TRAE 客户端的本机真实 device-id（ahanet/tt_net_config.config）
 // 注意：device-id 是所有 Trae 系产品（TraeCode / TraeWork）共享的本机设备标识，
 // 与产品专属的机器码（machineid）不同，对应签到请求头的 x-device-id。
 export async function getTraeDeviceId(): Promise<string> {
@@ -592,7 +705,7 @@ export async function startBrowserLoginForUpdate(accountId: string): Promise<voi
   return safeInvoke("start_browser_login_for_update", { accountId }, async () => delay(undefined));
 }
 
-// 通过读取当前 Trae 客户端登录态自动更新指定账号的 Token
+// 通过读取当前 TRAE 客户端登录态自动更新指定账号的 Token
 export async function updateAccountTokenFromClient(accountId: string): Promise<UsageSummary> {
   return safeInvoke("update_account_token_from_client", { accountId }, async () => delay(MOCK_USAGE_3));
 }

@@ -8,6 +8,7 @@ impl AccountManager {
         let account = self.store.accounts.iter()
             .find(|a| a.id == account_id)
             .ok_or_else(|| anyhow!("账号不存在"))?;
+        self.require_trae(account)?;
 
         let token = account.jwt_token.as_ref()
             .ok_or_else(|| anyhow!("账号没有 Token"))?;
@@ -172,13 +173,14 @@ impl AccountManager {
 
     /// 查询单个账号今日签到状态（用于列表展示 + 批量签到前跳过已签到账号）
     pub async fn checkin_status(&mut self, account_id: &str) -> Result<CheckinStatusResult> {
-        let token = {
-            let account = self.store.accounts.iter()
-                .find(|a| a.id == account_id)
-                .ok_or_else(|| anyhow!("账号不存在"))?;
-            account.jwt_token.clone()
-                .ok_or_else(|| anyhow!("账号没有 Token，请先刷新 Token"))?
-        };
+        let account = self.store.accounts.iter()
+            .find(|a| a.id == account_id)
+            .ok_or_else(|| anyhow!("账号不存在"))?
+            .clone();
+        self.require_trae(&account)?;
+
+        let token = account.jwt_token.clone()
+            .ok_or_else(|| anyhow!("账号没有 Token，请先刷新 Token"))?;
 
         let client = TraeApiClient::new_with_token(&token)?;
         let profile = self.ensure_checkin_device(account_id)?;
@@ -235,13 +237,14 @@ impl AccountManager {
 
     /// 每日签到（使用账号专属的持久化虚拟设备档案）
     pub async fn checkin(&mut self, account_id: &str) -> Result<CheckinResult> {
-        let token = {
-            let account = self.store.accounts.iter()
-                .find(|a| a.id == account_id)
-                .ok_or_else(|| anyhow!("账号不存在"))?;
-            account.jwt_token.clone()
-                .ok_or_else(|| anyhow!("账号没有 Token，请先刷新 Token"))?
-        };
+        let account = self.store.accounts.iter()
+            .find(|a| a.id == account_id)
+            .ok_or_else(|| anyhow!("账号不存在"))?
+            .clone();
+        self.require_trae(&account)?;
+
+        let token = account.jwt_token.clone()
+            .ok_or_else(|| anyhow!("账号没有 Token，请先刷新 Token"))?;
 
         let client = TraeApiClient::new_with_token(&token)?;
         let profile = self.ensure_checkin_device(account_id)?;
@@ -505,6 +508,7 @@ impl AccountManager {
             .find(|a| a.id == account_id)
             .ok_or_else(|| anyhow!("账号不存在"))?
             .clone();
+        self.require_trae(&account)?;
 
         let profile = self.ensure_checkin_device(account_id)?;
 

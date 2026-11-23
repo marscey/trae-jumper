@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 
+use crate::api::doubao_types::DoubaoQuotaView;
+
 /// 账号的"签到虚拟设备"档案
 ///
 /// 模拟该账号登录在一台独立虚拟设备上进行每日签到：
@@ -261,6 +263,32 @@ impl Default for DeviceIdStrategy {
     }
 }
 
+/// 账号所属平台。存量账号反序列化缺省为 Trae，保证旧数据兼容。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AccountPlatform {
+    /// Trae 系（TraeCode CN / TraeWork CN / 国际版）：IDE 切换、Token 续签、签到全套链路
+    Trae,
+    /// 豆包（doubao.com）：仅做额度/用量监控展示，不做客户端切换/写回/Token 续签。
+    Doubao,
+}
+
+impl Default for AccountPlatform {
+    fn default() -> Self {
+        Self::Trae
+    }
+}
+
+impl AccountPlatform {
+    /// 平台展示名（列表角标 / 详情标签）
+    pub fn label(self) -> &'static str {
+        match self {
+            AccountPlatform::Trae => "Trae",
+            AccountPlatform::Doubao => "豆包",
+        }
+    }
+}
+
 /// 签到全局配置
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CheckinConfig {
@@ -435,6 +463,15 @@ pub struct Account {
     /// Some(true/false) = 强制开启/关闭（覆盖总开关）
     #[serde(default)]
     pub restart_after_refresh_override: Option<bool>,
+
+    /// 账号所属平台（存量数据缺省 Trae，反序列化兼容）
+    #[serde(default)]
+    pub platform: AccountPlatform,
+
+    /// 最近一次拉取的豆包额度快照（仅 Doubao 平台；卡片离线兜底/列表展示用，
+    /// 实时数据走 `get_doubao_quota` 命令）。
+    #[serde(default)]
+    pub doubao_snapshot: Option<DoubaoQuotaView>,
 }
 
 impl Account {
@@ -480,7 +517,29 @@ impl Account {
             oauth_machine_id: None,
             oauth_host: None,
             restart_after_refresh_override: None,
+            platform: AccountPlatform::Trae,
+            doubao_snapshot: None,
         }
+    }
+
+    /// 构造豆包平台账号（纯 Cookie 会话，无 JWT / OAuth / 签到虚拟设备档案）。
+    pub fn new_doubao(
+        name: String,
+        mobile: Option<String>,
+        cookies: String,
+        user_id: String,
+        snapshot: Option<DoubaoQuotaView>,
+    ) -> Self {
+        let mut acc = Self::new(name, String::new(), cookies, user_id, String::new());
+        acc.platform = AccountPlatform::Doubao;
+        acc.mobile = mobile;
+        acc.checkin_device = None;
+        acc.plan_type = snapshot
+            .as_ref()
+            .map(|s| s.plan_name.clone())
+            .unwrap_or_else(|| "免费体验".to_string());
+        acc.doubao_snapshot = snapshot;
+        acc
     }
 }
 
@@ -561,6 +620,9 @@ pub struct AccountBrief {
     /// per-account 覆盖开关：None=跟随总开关，Some(true/false)=强制开/关
     #[serde(default)]
     pub restart_after_refresh_override: Option<bool>,
+    /// 账号所属平台（trae / doubao）
+    #[serde(default)]
+    pub platform: AccountPlatform,
 }
 
 impl From<&Account> for AccountBrief {
@@ -585,6 +647,7 @@ impl From<&Account> for AccountBrief {
             login_source: account.login_source,
             login_type: AccountLoginType::StandaloneManual, // 默认为仅库内，由 AccountManager 设置
             restart_after_refresh_override: account.restart_after_refresh_override,
+            platform: account.platform,
         }
     }
 }
@@ -612,6 +675,7 @@ impl AccountBrief {
             login_source: account.login_source,
             login_type: AccountLoginType::StandaloneManual, // 默认为仅库内，由 AccountManager 设置
             restart_after_refresh_override: account.restart_after_refresh_override,
+            platform: account.platform,
         }
     }
 }

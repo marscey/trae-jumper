@@ -4,9 +4,9 @@
 
 # TraeJumper
 
-TRAE CN / TraeWork CN / 国际版 Trae 多账号管理小工具
+TRAE CN / TraeWork CN / 国际版 Trae / 豆包 多账号管理小工具
 
-[![Version](https://img.shields.io/badge/version-1.0.3-blue?style=flat-square)](https://github.com/marscey/trae-jumper/releases)
+[![Version](https://img.shields.io/badge/version-1.0.4-blue?style=flat-square)](https://github.com/marscey/trae-jumper/releases)
 [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS-lightgrey?style=flat-square)](#-系统要求)
 [![Build](https://img.shields.io/github/actions/workflow/status/marscey/trae-jumper/build.yml?style=flat-square)](https://github.com/marscey/trae-jumper/actions)
 [![License](https://img.shields.io/badge/license-MIT-orange?style=flat-square)](#-免责声明)
@@ -15,7 +15,7 @@ TRAE CN / TraeWork CN / 国际版 Trae 多账号管理小工具
 
 </div>
 
-TraeJumper 是一款面向 Trae 系列 IDE 用户的多账号管理桌面工具。基于 [Tauri 2](https://tauri.app/) 构建，支持在多个 Trae 账号之间一键切换，实时查看各账号的 Token 使用量与积分配额，内置完整的签到、日志、自动刷新与定时续签能力。所有数据仅保存在本地。
+TraeJumper 是一款面向 TRAE 系列 IDE 用户的多账号管理桌面工具，现已扩展支持**豆包（Doubao）桌面客户端账号**。基于 [Tauri 2](https://tauri.app/) 构建，支持在多个账号之间一键切换，实时查看各账号的 Token 使用量与积分配额，内置完整的签到、日志、自动刷新与定时续签能力。所有数据仅保存在本地。
 
 ## ✨ 功能特性
 
@@ -25,17 +25,14 @@ TraeJumper 是一款面向 Trae 系列 IDE 用户的多账号管理桌面工具�
 - 在设置页随时切换目标应用，机器码、安装路径、登录站点、API 端点自动跟随变更
 - **多客户端活跃检测**：扫描所有已安装变体，账号在哪个客户端登录一目了然
 
-**账号管理**
+**账号管理（双平台支持）**
 
-- **内嵌 WebView 登录**：登录窗口内嵌浏览器（无痕隔离会话），完整捕获 JWT Token + HttpOnly Cookies（用于后续自动续签）
-- **OAuth Native 授权登录**：Trae 官方 OAuth 授权页面登录，后端 EC P-256 + PKCE + DeviceProof 签名，ExchangeToken 签发 **14 天 access\_token + 180 天 refresh\_token**，彻底告别短效 Token 过期
-- 通过 Token / WebView / OAuth 授权三种方式添加账号，自动获取账号信息并绑定机器码
-- 一键切换账号：自动关闭 Trae → 清除旧登录态 → 写入新账号 → 重新打开
-- **跨客户端冲突检测**：切换前检查目标账号是否已在其他客户端活跃，防止互踢顶号（可 force 强制切换）
-- 支持更新 Token、删除账号、查看详情、复制账号信息
-- **点击用户名**可直接打开账号详情弹窗（无需右键）
-- **批量操作**：选中多个账号后可批量刷新、批量删除、切换账号（单选）
-- **登录来源打标**：账号卡片显示来源标签（OAuth 授权 / 客户端导入 / WebView 登录 / 手动 Token | Cookie）
+- **双账号体系**：同时支持 **TRAE 系列**（CN / Work / 国际版）与 **豆包（Doubao）** 桌面客户端账号，Tab 切换独立管理、批量操作仅作用于当前平台
+- **TRAE 账号添加方式**：内嵌 WebView 无痕登录（HttpOnly Cookies 自动捕获用于续签）/ OAuth Native 授权（EC P-256 + PKCE，ExchangeToken 签发 14 天 access\_token + 180 天 refresh\_token）/ 手动 Token
+- **豆包账号添加方式**：**从豆包客户端读取**（推荐，自动解密 macOS 豆包 Chromium Profile Cookies DB，首次需授权系统钥匙串，后续缓存密钥）/ 手动粘贴 Cookie 串
+- **一键切换 TRAE 账号**：自动关闭客户端 → 清除旧登录态 → 写入新账号 → 重新打开；切换前 entitlement 校验 Token 有效性，死 Token 自动 cookies 续签；跨客户端冲突检测（防止互踢顶号，可 force 强制切换）
+- **登录来源打标**：账号卡片显示来源标签（TRAE 客户端读取 / 豆包客户端读取 / OAuth 授权 / WebView 登录 / 手动 Token | Cookie）
+- **批量操作**：选中多个账号后批量刷新、批量签到、批量删除，选中优先（未选=全量，已选=交集）；Tab 切换自动清空跨 Tab 选中集
 
 **Token 生命周期管理**
 
@@ -47,15 +44,11 @@ TraeJumper 是一款面向 Trae 系列 IDE 用户的多账号管理桌面工具�
 - **Token 过期状态细化**：客户端登录中（让位）/ 正常（>3h）/ 即将过期（<3h）+ 相对时长 / 已过期（红色加粗）
 - **OAuth 凭证面板**：账号详情、卡片、列表项显示 RefreshToken 有效期；`UpdateToken` 弹窗支持 OAuth 授权刷新
 
-**签到系统**
+**签到系统（TRAE + 豆包）**
 
-- **虚拟设备档案**：每个账号独立分配一组虚拟设备指纹（session-id、market-user-id、device-id、device-brand），模拟"一台独立设备"每日签到
-- **设备 ID 双策略**：策略一 = 真实设备前缀 + 随机后缀；策略二 = FNV-1a 哈希映射到安全区间 \[1e15, 4.5e15)
-- **签到风控自愈**：自动检测旧版非法 device-id（≥4.5e15）并重生成
-- **单账号签到 / 批量签到 / 签到状态查询**，带账号专属随机延迟防风控
-- **自动签到**：设置触发时间点（默认 22:00），防跨零点策略 + 内存去重，同一天只执行一次
-- **签到请求头预览**：查看每个账号实际发送的全部 headers 配置
-- **批量签到全屏 loading 遮罩**：签到期间深色半透明遮罩 + 毛玻璃背景，明确提示"正在批量签到 N 个账号，请勿切换或关闭"，避免"点了没反应"的错觉
+- **TRAE 签到**：虚拟设备档案（session-id / market-user-id / device-id / device-brand）模拟独立设备每日签到；设备 ID 双策略 + 风控自愈（自动检测并重生非法 device-id）
+- **豆包签到**：D10 `/alice/ug/campaign/landing/checkin/` 端点（幂等）；Cookie 过期返回 710010702 系统错误时**自动回退豆包客户端登录态**（强制校验 user\_id 防串号）
+- 批量签到带账号专属随机延迟防风控；自动签到（默认 22:00）防跨零点 + 内存去重；签到期间全屏 loading 遮罩
 
 **使用量监控**
 
@@ -97,7 +90,17 @@ TraeJumper 是一款面向 Trae 系列 IDE 用户的多账号管理桌面工具�
 - 系统托盘：关闭窗口后隐藏到托盘，左键恢复、右键菜单退出
 - 单实例运行，避免多开冲突
 - 登录窗口独立，不受托盘行为影响
-- 支持在线自动更新（关于页点击「检查更新」即可下载安装新版本，签名校验）
+- **自动更新**：侧边栏版本号入口 → 更新弹窗显示版本差异 + Release Notes + 下载进度（签名校验）
+
+**设置页重构（按归属分组）**
+
+```
+🔧 通用设置          [所有账号]     ← 置顶：自动刷新、日志 watchdog
+🤖 TRAE 客户端       [TRAE 账号专属]  ← 目标应用、机器码、清除登录态
+🔑 TRAE Token 续签   [TRAE 账号专属]  ← OAuth RefreshToken 自动续签
+✍️ 签到配置          [所有账号]     ← 签到时间 + 设备策略（后两项 TRAE 专属）
+📦 数据管理          [所有账号]     ← 导出、导入、清空
+```
 
 **安全存储**
 
@@ -113,7 +116,7 @@ TraeJumper 是一款面向 Trae 系列 IDE 用户的多账号管理桌面工具�
 | macOS   | 10.15+  |
 
 > \[!NOTE]
-> 需已安装任意一种 Trae 客户端（TRAE CN / TraeWork CN / 国际版）。
+> TRAE 账号需已安装任意一种 TRAE 客户端（TRAE CN / TraeWork CN / 国际版）。豆包账号需已安装豆包桌面客户端（macOS 首次读取需授权系统钥匙串）。
 
 ## 📦 安装
 
@@ -121,8 +124,8 @@ TraeJumper 是一款面向 Trae 系列 IDE 用户的多账号管理桌面工具�
 
 前往 [Releases](https://github.com/marscey/trae-jumper/releases) 页面下载对应平台的安装包：
 
-- **macOS**：`TraeJumper-1.0.0-mac-arm64.dmg` / `TraeJumper-1.0.0-mac-x64.dmg`
-- **Windows**：`TraeJumper-1.0.0-win-x64-setup.exe`（另有 `.msi` 安装包）
+- **macOS**：`TraeJumper-1.0.4-mac-arm64.dmg` / `TraeJumper-1.0.4-mac-x64.dmg`
+- **Windows**：`TraeJumper-1.0.4-win-x64-setup.exe`
 
 ### 从源码构建
 
@@ -163,29 +166,17 @@ npm run version:sync          # 改 package.json 后同步
 
 ### 3. 添加账号
 
-**方式 A — OAuth Native 授权（推荐）**
+**TRAE 账号**
 
-1. 点击右上角 **添加账号**
-2. 在首个 **OAuth 授权** tab 点击 **OAuth 授权登录**
-3. 内嵌 Trae 官方授权页面弹出（**loading 中转页先出现**，覆盖远程连接白屏）
-4. 输入账号手机号/邮箱 + 验证码 → 点 **登录并打开 TRAE**
-5. 授权成功后 Trae 返回 callback → 后端 ExchangeToken 签发新 access\_token（14 天）+ refresh\_token（180 天）
-6. 自动创建账号 → Toast 成功
+- **OAuth Native 授权（推荐）**：添加账号 → **TRAE Tab** → **OAuth 授权** tab → 内嵌 TRAE 官方授权页 → ExchangeToken 签发 14 天 access\_token + 180 天 refresh\_token（loading 中转页覆盖远程连接白屏）
+- **TRAE 客户端读取**：TRAE 客户端已登录目标账号 → 从 storage.json 解密读取（含 AES-128-CBC + SHA-512 解密）
+- **WebView 登录（旧）**：内嵌无痕隔离会话浏览器 → 完整捕获 JWT Token + HttpOnly Cookies
+- **手动 Token**：F12 → Application → Local Storage → 复制 `iCubeAuthInfo` 的 token 值
 
-> 若授权页已登录其他账号，点底部 **切换账号** 清除 cookies 后重来（无痕重建 webview）。已登录同一账号则自动 **更新** OAuth 凭证（不报错）。
+**豆包账号**
 
-**方式 B — WebView 登录（旧）**
-
-1. 切换到 **浏览器登录（旧）** tab，点击 **打开登录窗口**
-2. 内嵌浏览器（无痕隔离会话）手动确认登录完成 → 点 **确认登录**
-3. 自动读取 Token + Cookies + 用户信息，保存并绑定机器码
-
-> 此方式通过无痕隔离会话实现，每次登录互不顶号；捕获的 Cookies 包含 HttpOnly sessionid，用于后续 Token 自动续签。
-
-**方式 C — 手动 Token**
-
-1. 切换到手动模式，输入 Trae Token
-2. 点击 **添加**，系统自动获取账号信息并保存
+- **从豆包客户端读取（推荐）**：添加账号 → **豆包 Tab** → **从豆包客户端读取**（自动解密 macOS 豆包 Chromium Profile Cookies DB：PBKDF2-HMAC-SHA1 → AES-128-CBC → 剥离 Chrome v24+ SHA256 前缀 → 匹配 sessionid → user\_id；首次需授权系统钥匙串「始终允许」，密钥缓存到本地后不再弹窗）
+- **手动粘贴 Cookie**：登录豆包网页版 → F12 → Application → Cookies → 复制完整 cookie 串
 
 **获取 Token 的方法：**
 
@@ -294,11 +285,46 @@ npm run version:sync          # 改 package.json 后同步
 > \[!WARNING]
 > 本工具仅供学习和技术研究使用。使用过程中可能涉及绕过软件账号切换限制，使用者需自行评估并承担全部风险；请勿用于商业用途，不得用于绕过软件正当授权机制。
 
+## ❓ 常见问题
+
+### macOS 提示"TraeJumper 已损坏，无法打开"
+
+macOS 的 Gatekeeper 会对非 App Store 下载的 App 附加 `com.apple.quarantine` 扩展属性。首次打开前需要手动清除：
+
+```bash
+sudo xattr -rd com.apple.quarantine /Applications/TraeJumper.app
+```
+
+如果 App 名称不同（如 `TraeJumper-beta.app`），路径相应调整。执行完后直接双击 App 即可。
+
+### macOS 首次读取豆包客户端 Cookie 弹钥匙串授权
+
+第一次点击「从豆包客户端读取」时，系统会弹窗："TraeJumper 想要访问'Doubao Safe Storage'中存储的信息"。请点 **始终允许**，密钥会被缓存到本地，后续不再弹窗。
+
+### 豆包签到返回 `710010702 系统错误`
+
+这是豆包服务端风控——签到活动仅对**豆包桌面客户端登录态**开放，网页端 Cookie 恒定返回此错误。TraeJumper 已内置自动回退逻辑：账号 Cookie 过期返回 710010702 时，自动读取本机豆包客户端登录态重试（无需手动操作）。如果仍失败，确认豆包客户端已登录该账号。
+
+### 切换 TRAE 账号后客户端自动登出
+
+大概率是写入的 Token 已失效。TraeJumper 切换前会用 entitlement 接口校验 Token 有效性，死 Token 会先尝试 cookies 续签；但如果 cookies 也过期（约 14 天空闲），则续签失败、写入死 Token → 客户端重启校验失败 → 自动登出。
+
+**解决办法**：重新通过 OAuth Native 授权或 TRAE 客户端读取方式更新该账号。
+
+### OAuth 账号 RefreshToken 401
+
+ExchangeToken 签发新 RefreshToken 时旧的**立即失效**（OAuth 标准一次性行为）。如果手动恢复了旧的 `accounts.json` 备份，里面存的 RefreshToken 可能已被轮换作废。重新走一遍 OAuth 授权登录即可。
+
+### Windows 下进程检测失败
+
+`machine.rs` 依赖 `tasklist` 枚举进程。如果 Trae 进程名变更或被混淆，检测可能失败。请确认已安装的是正版 TRAE CN / TraeWork CN 客户端。
+
 ## 🛠️ 技术栈
 
 - **前端**：React 19 / TypeScript / Vite 7 / Recharts 3 / lucide-react
-- **后端**：Tauri 2 / Rust / Tokio / Reqwest / Serde
-- **加密**：AES-128-CBC + SHA-512
+- **后端**：Tauri 2 / Rust / Tokio / Reqwest / Serde / PBKDF2
+- **加密**：AES-128-CBC + SHA-512 + PBKDF2-HMAC-SHA1
+- **macOS 集成**：Chromium Cookies 解密（安全钥匙串 → PBKDF2 → AES-128-CBC → v24+ SHA256 前缀剥离）
 - **平台**：Windows（NSIS/MSI）、macOS（DMG）
 - **自动更新**：Tauri Updater 2 + Ed25519 签名校验
 
@@ -317,14 +343,18 @@ trae-jumper/
 ├── src-tauri/               # Tauri 后端（Rust）
 │   ├── src/
 │   │   ├── account/         # 账号管理核心
-│   │   │   ├── account_manager.rs  # AccountManager（2952 行）：切换、续签、签到、存储、让位逻辑
-│   │   │   ├── types.rs            # 类型定义：Account / AccountBrief / CheckinDeviceProfile / CheckinConfig / AccountLoginSource / AccountLoginType / DeviceIdStrategy
+│   │   │   ├── account_manager.rs  # AccountManager：切换、续签、签到、存储、让位逻辑
+│   │   │   ├── doubao.rs           # DoubaoManager：导入客户端登录态、签到 fallback、user_id 防串号
+│   │   │   ├── types.rs            # Account / AccountBrief / CheckinDeviceProfile / Doubao 类型
 │   │   │   └── mod.rs
-│   │   ├── api/             # Trae API 客户端
-│   │   │   ├── trae_api.rs         # API 客户端：entitlement / GetUserToken / ExchangeToken(Refresh) / credit / checkin / usage（多端点容灾）
-│   │   │   ├── types.rs            # API 响应类型
+│   │   ├── api/             # API 客户端
+│   │   │   ├── trae_api.rs         # TRAE API：entitlement / GetUserToken / ExchangeToken / credit / checkin / usage
+│   │   │   ├── doubao_api.rs       # 豆包 API：账号信息 / 签到 / 额度查询（D10 checkin）
+│   │   │   ├── doubao_types.rs     # 豆包 API 响应类型
+│   │   │   ├── types.rs            # TRAE API 响应类型
 │   │   │   └── mod.rs
-│   │   ├── crypto.rs        # 加密解密（AES-128-CBC + SHA-512，兼容 Trae storage.json）
+│   │   ├── doubao_client.rs # macOS 豆包客户端 Chromium Cookie 解密链路
+│   │   ├── crypto.rs        # 加密解密（AES-128-CBC + SHA-512，兼容 TRAE storage.json）
 │   │   ├── trae_app.rs      # 应用变体管理（CN / WORK / 国际版，端点、bundle path、key 格式）
 │   │   ├── machine.rs       # 机器码 + 进程检测（ps / osascript / registry）
 │   │   ├── login.rs         # 内嵌 WebView 登录（无痕 cookies + WKHTTPCookieStore 读取）
@@ -342,6 +372,28 @@ trae-jumper/
 ```
 
 ## 📋 更新日志
+
+### v1.0.4（2026-11-23）— 豆包账号体系 + 设置页重构 + OAuth 详情刷新
+
+[完整 Release Notes →](notes/RELEASE_NOTES_v1.0.4.md)
+
+**✨ 新功能**
+
+- **豆包（Doubao）账号完整支持**：独立 `platform="doubao"` 账号类型；macOS 客户端 Chromium Cookie DB 解密读取（PBKDF2-HMAC-SHA1 → AES-128-CBC → Chrome v24+ SHA256 前缀剥离）；豆包 API 客户端（账号信息 / D10 签到 / 额度查询）；签到 Cookie 过期自动回退客户端登录态（强制校验 user\_id 防串号）
+- **账号管理平台隔离**：TRAE / 豆包 Tab 切换独立管理；批量操作（全选/刷新/签到）仅作用于当前平台；选中优先策略
+- **设置页重构**：Section 按归属标注（TRAE 账号专属 / 所有账号）；通用置顶，TRAE 客户端 + 续签紧随
+- **自动更新重构**：侧边栏版本号入口 + 更新弹窗（版本差异 + Release Notes + 下载进度）
+- **TRAE 账号详情刷新**：OAuth 三路策略自动选择最优路径
+
+**🔧 关键问题修复（含 Code Review 10 项）**
+
+- `handleBatchRefresh` deps 缺 platformFilter / first\_uid 回退串号 / prod println! cfg guard / multi\_sids percent-encode 分隔符解析链 / Cookie header 控制字符过滤 / Doubao Safe Storage 缓存密钥
+
+**技术细节**
+
+- Profile 选择：Local State `last_used` 优先，fallback 按 `active_time` 降序
+- multi\_sids 解析：**先 decode 整个值再 split**（所有分隔符都 percent-encoded）
+- 6 新增文件 / 34 修改文件 / +4622 / -551 行
 
 ### v1.0.0（2026-10-15）— OAuth Native 授权 + UX 全面打磨 🎊
 

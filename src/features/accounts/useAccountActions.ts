@@ -16,8 +16,20 @@ interface UseAccountActionsParams {
   setDetailAccount: SetStateFn<AccountWithUsage | null>;
   setContextMenu: SetStateFn<ContextMenuState | null>;
   currentClientName: string;
+  /** 当前 tab 平台过滤（trae | doubao），批量操作按此限定 */
+  platformFilter: "trae" | "doubao";
   /** 单账号数据刷新（来自 useTokenActions） */
   refreshAccount: (accountId: string) => Promise<void>;
+}
+
+/** 辅助：按平台过滤账号 */
+function filterByPlatform<T extends { platform: string }>(
+  list: T[],
+  p: "trae" | "doubao"
+): T[] {
+  return list.filter((a) =>
+    p === "doubao" ? a.platform === "doubao" : a.platform !== "doubao"
+  );
 }
 
 /**
@@ -35,6 +47,7 @@ export function useAccountActions({
   setDetailAccount,
   setContextMenu,
   currentClientName,
+  platformFilter,
   refreshAccount,
 }: UseAccountActionsParams) {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
@@ -97,14 +110,27 @@ export function useAccountActions({
     });
   }, []);
 
-  // 全选/取消全选
+  // 全选/取消全选（仅当前 tab 下的账号）
   const handleSelectAll = useCallback(() => {
-    if (selectedIds.size === accounts.length) {
-      setSelectedIds(new Set());
+    const scoped = filterByPlatform(accounts, platformFilter);
+    const scopedIds = new Set(scoped.map((a) => a.id));
+    const allScopedSelected = scoped.length > 0 && scoped.every((a) => selectedIds.has(a.id));
+    if (allScopedSelected) {
+      // 取消全选：只移除当前 tab 下的 id，保留其他 tab 可能选中的（防御性）
+      setSelectedIds((prev) => {
+        const next = new Set(prev);
+        scopedIds.forEach((id) => next.delete(id));
+        return next;
+      });
     } else {
-      setSelectedIds(new Set(accounts.map((a) => a.id)));
+      // 全选：当前 tab 下的账号 id 合并进现有选中
+      setSelectedIds((prev) => {
+        const next = new Set(prev);
+        scopedIds.forEach((id) => next.add(id));
+        return next;
+      });
     }
-  }, [selectedIds, accounts]);
+  }, [accounts, platformFilter, selectedIds, setSelectedIds]);
 
   // 右键菜单
   const handleContextMenu = useCallback((e: React.MouseEvent, accountId: string) => {
@@ -213,16 +239,18 @@ export function useAccountActions({
   // - 有选中：刷新选中账号
   // 底层复用 handleRefreshAccount 的数据范围（usage + credits），保持一致
   const handleBatchRefresh = useCallback(async () => {
+    const scopedIds = filterByPlatform(accounts, platformFilter).map((a) => a.id);
+    // 选中的 id 里取当前 tab 的；没选 → 刷新当前 tab 全部
     const ids = selectedIds.size > 0
-      ? Array.from(selectedIds)
-      : accounts.map((a) => a.id);
+      ? scopedIds.filter((id) => selectedIds.has(id))
+      : scopedIds;
 
     if (ids.length === 0) {
-      addToast("warning", "暂无账号可刷新");
+      addToast("warning", `暂无${platformFilter === "trae" ? "Trae" : "豆包"}账号可刷新`);
       return;
     }
 
-    addToast("info", `正在刷新 ${ids.length} 个账号...`);
+    addToast("info", `正在刷新 ${ids.length} 个${platformFilter === "trae" ? "Trae" : "豆包"}账号...`);
 
     // 并行刷新（底层与 handleRefreshAccount 一致：usage + credits）
     const results = await Promise.allSettled(
@@ -254,7 +282,7 @@ export function useAccountActions({
     } else {
       addToast("warning", `刷新完成：${successCount} 成功，${failCount} 失败`);
     }
-  }, [selectedIds, accounts, addToast, setAccounts, markTokenExpired]);
+  }, [selectedIds, accounts, addToast, setAccounts, markTokenExpired, platformFilter]);
 
   // 检测当前账号：重新扫描所有已安装客户端的 storage.json，修正"客户端已退出但 TJ 还显示激活态"的标签
   const handleCheckCurrent = useCallback(async () => {

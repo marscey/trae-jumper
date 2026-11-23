@@ -117,14 +117,14 @@ export function ClientSection({ onToast, onClientChange, onAccountsChanged }: Cl
     }
   };
 
-  // 加载 Trae 客户端的本机真实 device-id
+  // 加载 TRAE 客户端的本机真实 device-id
   const loadTraeDeviceId = async () => {
     setDeviceRefreshing(true);
     try {
       const id = await api.getTraeDeviceId();
       setTraeDeviceId(id);
     } catch (err: any) {
-      console.error("获取 Trae 客户端设备 ID 失败:", err);
+      console.error("获取 TRAE 客户端设备 ID 失败:", err);
       setTraeDeviceId("未找到");
     } finally {
       setDeviceRefreshing(false);
@@ -193,7 +193,7 @@ export function ClientSection({ onToast, onClientChange, onAccountsChanged }: Cl
     }
   };
 
-  // 复制 Trae 客户端设备 ID
+  // 复制 TRAE 客户端设备 ID
   const handleCopyTraeDeviceId = async () => {
     try {
       await navigator.clipboard.writeText(traeDeviceId);
@@ -275,7 +275,7 @@ export function ClientSection({ onToast, onClientChange, onAccountsChanged }: Cl
   return (
     <>
     <div className="settings-section">
-      <h3>客户端</h3>
+      <h3>TRAE 客户端 <span className="section-badge trae">TRAE 账号专属</span></h3>
       <div className="machine-id-card trae-card client-card">
         {/* 分组 A：目标客户端选择 */}
         <div className="client-group">

@@ -1,6 +1,6 @@
 [package]
 name = "trae-jumper"
-version = "1.0.3"
+version = "1.0.4"
 description = "TraeJumper - 轻松管理 Trae 账号的小工具"
 authors = ["marscey"]
 edition = "2021"
@@ -36,6 +36,9 @@ tauri-plugin-single-instance = "2"
 sha2 = "0.10"
 aes = "0.8"
 cbc = { version = "0.1", features = ["alloc"] }
+# 豆包客户端 Chromium Cookies v10 解密（PBKDF2-HMAC-SHA1 派生 AES-128 密钥）
+pbkdf2 = "0.12"
+sha1 = "0.10"
 rand = "0.8"
 # OAuth Native 登录：EC P-256 密钥对 + ECDSA-SHA256 签名
 p256 = { version = "0.13", features = ["ecdsa", "pkcs8", "pem"] }

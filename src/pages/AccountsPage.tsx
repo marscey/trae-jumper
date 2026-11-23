@@ -17,6 +17,9 @@ interface AccountsPageProps {
   onViewModeChange: (mode: ViewMode) => void;
   checkinLoading: boolean;
   checkCurrentLoading: boolean;
+  /** 当前平台过滤 tab（由父级托管） */
+  platformFilter: "trae" | "doubao";
+  onPlatformFilterChange: (p: "trae" | "doubao") => void;
   /** 头部「添加账号」按钮 */
   onAddAccountClick: () => void;
   /** 头部操作菜单：删除过期账号 */
@@ -58,6 +61,8 @@ export function AccountsPage({
   onViewModeChange,
   checkinLoading,
   checkCurrentLoading,
+  platformFilter,
+  onPlatformFilterChange,
   onAddAccountClick,
   onDeleteExpired,
   onImportMenu,
@@ -99,6 +104,59 @@ export function AccountsPage({
       window.removeEventListener("resize", close);
     };
   }, [actionMenuOpen]);
+
+  // 按平台分组：当前过滤分区内展示对应账号
+  const traeAccounts = accounts.filter((a) => a.platform !== "doubao");
+  const doubaoAccounts = accounts.filter((a) => a.platform === "doubao");
+  const visibleAccounts = platformFilter === "trae" ? traeAccounts : doubaoAccounts;
+  const currentAccounts = visibleAccounts; // 别名：当前 tab 下的账号集
+  const hasTraeAccounts = traeAccounts.length > 0;
+  const hasDoubaoAccounts = doubaoAccounts.length > 0;
+  const visibleSelectedIds = Array.from(selectedIds).filter(
+    (id) => currentAccounts.some((a) => a.id === id)
+  );
+  const allVisibleSelected =
+    currentAccounts.length > 0 &&
+    currentAccounts.every((a) => selectedIds.has(a.id));
+
+  const renderAccount = (account: AccountWithUsage) =>
+    viewMode === "grid" ? (
+      <AccountCard
+        key={account.id}
+        account={account}
+        usage={account.usage || null}
+        credits={account.credits || null}
+        doubaoQuota={account.doubao_quota || null}
+        creditsLoading={creditsLoadingIds.has(account.id)}
+        selected={selectedIds.has(account.id)}
+        onSelect={onSelect}
+        onContextMenu={onContextMenu}
+        onViewDetail={onViewDetail}
+        onRefresh={onRefresh}
+        refreshing={refreshingIds.has(account.id)}
+        onRenewClient={onRenewClient}
+        renewingClient={renewingClientIds.has(account.id)}
+        checkinConfig={checkinConfig}
+      />
+    ) : (
+      <AccountListItem
+        key={account.id}
+        account={account}
+        usage={account.usage || null}
+        credits={account.credits || null}
+        doubaoQuota={account.doubao_quota || null}
+        creditsLoading={creditsLoadingIds.has(account.id)}
+        selected={selectedIds.has(account.id)}
+        onSelect={onSelect}
+        onContextMenu={onContextMenu}
+        onViewDetail={onViewDetail}
+        onRefresh={onRefresh}
+        refreshing={refreshingIds.has(account.id)}
+        onRenewClient={onRenewClient}
+        renewingClient={renewingClientIds.has(account.id)}
+        checkinConfig={checkinConfig}
+      />
+    );
 
   return (
     <>
@@ -196,44 +254,77 @@ export function AccountsPage({
         {accounts.length > 0 && (
           <div className="toolbar">
             <div className="toolbar-left">
-              <label className="select-all">
+              <div className="view-toggle platform-switch">
+              <button
+                className={`view-btn ${platformFilter === "trae" ? "active" : ""}`}
+                onClick={() => onPlatformFilterChange("trae")}
+                title="Trae 账号"
+              >
+                Trae <span className="platform-switch-count">{traeAccounts.length}</span>
+              </button>
+              <button
+                className={`view-btn ${platformFilter === "doubao" ? "active" : ""}`}
+                onClick={() => onPlatformFilterChange("doubao")}
+                title="豆包账号"
+              >
+                豆包 <span className="platform-switch-count">{doubaoAccounts.length}</span>
+              </button>
+            </div>
+            <label className="select-all">
                 <input
                   type="checkbox"
-                  checked={selectedIds.size === accounts.length && accounts.length > 0}
+                  checked={allVisibleSelected}
                   onChange={onSelectAll}
                 />
-                全选 ({selectedIds.size}/{accounts.length})
+                {visibleSelectedIds.length > 0
+                  ? `全选 (${visibleSelectedIds.length})`
+                  : "全选"}
               </label>
               <button
                 className="batch-btn"
                 onClick={onBatchRefresh}
-                title={selectedIds.size > 0 ? `刷新选中的 ${selectedIds.size} 个账号` : "刷新全部账号"}
+                title={
+                  visibleSelectedIds.length > 0
+                    ? `刷新选中的 ${visibleSelectedIds.length} 个${platformFilter === "trae" ? "Trae" : "豆包"}账号`
+                    : `刷新全部${platformFilter === "trae" ? "Trae" : "豆包"}账号`
+                }
               >
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="14" height="14">
                   <path d="M23 4v6h-6M1 20v-6h6M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>
                 </svg>
-                {selectedIds.size > 0 ? `刷新选中 (${selectedIds.size})` : "刷新全部"}
+                {visibleSelectedIds.length > 0
+                  ? `刷新 (${visibleSelectedIds.length})`
+                  : "刷新全部"}
               </button>
-              <button
-                className={`batch-btn ${checkCurrentLoading ? "loading" : ""}`}
-                onClick={onCheckCurrent}
-                disabled={checkCurrentLoading || accounts.length === 0}
-                title="重新扫描所有客户端 storage.json，修正'当前活跃'标签（解决客户端已退出但 TJ 仍显示激活态的问题）"
-              >
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="14" height="14">
-                  <circle cx="12" cy="12" r="10"/>
-                  <circle cx="12" cy="12" r="4"/>
-                  <line x1="21.17" y1="8" x2="12" y2="8"/>
-                  <line x1="3.95" y1="6.06" x2="8.54" y2="14"/>
-                  <line x1="10.88" y1="21.94" x2="15.46" y2="14"/>
-                </svg>
-                {checkCurrentLoading ? "检测中..." : "检测当前账号"}
-              </button>
+              {platformFilter === "trae" && (
+                <button
+                  className={`batch-btn ${checkCurrentLoading ? "loading" : ""}`}
+                  onClick={onCheckCurrent}
+                  disabled={checkCurrentLoading || !hasTraeAccounts}
+                  title="重新扫描所有客户端 storage.json，修正'当前活跃'标签"
+                >
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="14" height="14">
+                    <circle cx="12" cy="12" r="10"/>
+                    <circle cx="12" cy="12" r="4"/>
+                    <line x1="21.17" y1="8" x2="12" y2="8"/>
+                    <line x1="3.95" y1="6.06" x2="8.54" y2="14"/>
+                    <line x1="10.88" y1="21.94" x2="15.46" y2="14"/>
+                  </svg>
+                  {checkCurrentLoading ? "检测中..." : "检测当前账号"}
+                </button>
+              )}
               <button
                 className="batch-btn"
                 onClick={onCheckinAll}
-                disabled={checkinLoading || accounts.length === 0}
-                title="所有账号每日签到领取积分"
+                disabled={
+                  checkinLoading ||
+                  (platformFilter === "trae" ? !hasTraeAccounts : !hasDoubaoAccounts)
+                }
+                title={
+                  platformFilter === "trae"
+                    ? "Trae 账号每日签到领取积分"
+                    : "豆包账号签到（需桌面客户端登录态）"
+                }
               >
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="14" height="14">
                   <rect x="3" y="4" width="18" height="18" rx="2" ry="2"/>
@@ -242,24 +333,30 @@ export function AccountsPage({
                   <line x1="3" y1="10" x2="21" y2="10"/>
                   <path d="M9 16l2 2 4-4"/>
                 </svg>
-                {checkinLoading ? "签到中..." : "全部签到"}
+                {checkinLoading
+                  ? "签到中..."
+                  : visibleSelectedIds.length > 0
+                  ? `签到 (${visibleSelectedIds.length})`
+                  : "全部签到"}
               </button>
               {selectedIds.size > 0 && (
                 <div className="batch-actions">
-                  <button
-                    className="batch-btn primary"
-                    onClick={() => onSwitchSelected(Array.from(selectedIds)[0])}
-                    disabled={selectedIds.size !== 1}
-                    title={selectedIds.size === 1 ? "切换到选中账号" : "请选择单个账号"}
-                  >
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="14" height="14">
-                      <path d="M17 1l4 4-4 4"/>
-                      <path d="M3 11V9a4 4 0 0 1 4-4h14"/>
-                      <path d="M7 23l-4-4 4-4"/>
-                      <path d="M21 13v2a4 4 0 0 1-4 4H3"/>
-                    </svg>
-                    切换账号
-                  </button>
+                  {platformFilter === "trae" && (
+                    <button
+                      className="batch-btn primary"
+                      onClick={() => onSwitchSelected(Array.from(selectedIds)[0])}
+                      disabled={selectedIds.size !== 1}
+                      title={selectedIds.size === 1 ? "切换到选中账号" : "请选择单个账号"}
+                    >
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="14" height="14">
+                        <path d="M17 1l4 4-4 4"/>
+                        <path d="M3 11V9a4 4 0 0 1 4-4h14"/>
+                        <path d="M7 23l-4-4 4-4"/>
+                        <path d="M21 13v2a4 4 0 0 1-4 4H3"/>
+                      </svg>
+                      切换账号
+                    </button>
+                  )}
                   <button className="batch-btn danger" onClick={onBatchDelete}>
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="14" height="14">
                       <path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
@@ -321,47 +418,19 @@ export function AccountsPage({
               </button>
             </div>
           </div>
+        ) : visibleAccounts.length === 0 ? (
+          <div className="empty-state">
+            <div className="empty-icon">📋</div>
+            <h3>暂无{platformFilter === "trae" ? "Trae" : "豆包"}账号</h3>
+            <p>点击上方按钮添加{platformFilter === "trae" ? "Trae" : "豆包"}账号，或切换到另一平台查看</p>
+          </div>
         ) : viewMode === "grid" ? (
           <div className="account-grid">
-            {accounts.map((account) => (
-              <AccountCard
-                key={account.id}
-                account={account}
-                usage={account.usage || null}
-                credits={account.credits || null}
-                creditsLoading={creditsLoadingIds.has(account.id)}
-                selected={selectedIds.has(account.id)}
-                onSelect={onSelect}
-                onContextMenu={onContextMenu}
-                onViewDetail={onViewDetail}
-                onRefresh={onRefresh}
-                refreshing={refreshingIds.has(account.id)}
-                onRenewClient={onRenewClient}
-                renewingClient={renewingClientIds.has(account.id)}
-                checkinConfig={checkinConfig}
-              />
-            ))}
+            {visibleAccounts.map(renderAccount)}
           </div>
         ) : (
           <div className="account-list">
-            {accounts.map((account) => (
-              <AccountListItem
-                key={account.id}
-                account={account}
-                usage={account.usage || null}
-                credits={account.credits || null}
-                creditsLoading={creditsLoadingIds.has(account.id)}
-                selected={selectedIds.has(account.id)}
-                onSelect={onSelect}
-                onContextMenu={onContextMenu}
-                onViewDetail={onViewDetail}
-                onRefresh={onRefresh}
-                refreshing={refreshingIds.has(account.id)}
-                onRenewClient={onRenewClient}
-                renewingClient={renewingClientIds.has(account.id)}
-                checkinConfig={checkinConfig}
-              />
-            ))}
+            {visibleAccounts.map(renderAccount)}
           </div>
         )}
       </main>

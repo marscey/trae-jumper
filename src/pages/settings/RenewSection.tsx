@@ -10,7 +10,7 @@ export function RenewSection({ cfg }: RenewSectionProps) {
 
   return (
     <div className="settings-section">
-      <h3>续签配置</h3>
+      <h3>TRAE Token 续签 <span className="section-badge trae">TRAE 账号专属</span></h3>
 
       <div className="setting-item">
         <div className="setting-info">
@@ -43,18 +43,18 @@ export function RenewSection({ cfg }: RenewSectionProps) {
       {checkinConfig.auto_renew_enabled && (
         <div className="setting-item">
           <div className="setting-info">
-            <div className="setting-label">自动续签后重启 Trae 客户端</div>
+            <div className="setting-label">自动续签后重启 TRAE 客户端</div>
             <div className="setting-desc">
-              续签写回 storage.json 后，自动 kill+relaunch Trae 客户端以加载新 token
+              续签写回 storage.json 后，自动 kill+relaunch TRAE 客户端以加载新 token
             </div>
             {checkinConfig.auto_restart_after_refresh && (
               <div style={{ marginTop: "6px", padding: "8px 12px", background: "var(--bg-secondary)", borderRadius: "8px", fontSize: "12px", color: "var(--text-warning)", lineHeight: "1.7" }}>
-                ⚠️ 关闭此选项会导致客户端内存 token 与 storage.json 不一致，Trae 客户端的 verifyStrictTokenInBackground（Mac 锁屏解锁后/每 5 分钟）会检测到并执行 clearUserInfo 登出。仅建议你确认清楚风险后再关闭。
+                ⚠️ 关闭此选项会导致客户端内存 token 与 storage.json 不一致，TRAE 客户端的 verifyStrictTokenInBackground（Mac 锁屏解锁后/每 5 分钟）会检测到并执行 clearUserInfo 登出。仅建议你确认清楚风险后再关闭。
               </div>
             )}
             {!checkinConfig.auto_restart_after_refresh && (
               <div style={{ marginTop: "6px", padding: "8px 12px", background: "rgba(255,165,0,0.1)", borderRadius: "8px", fontSize: "12px", color: "var(--text-warning)", lineHeight: "1.7", border: "1px solid rgba(255,165,0,0.3)" }}>
-                ⚠️ 已关闭！客户端正在交互中的会话不会被打断，但 Mac 锁屏解锁后 Trae 客户端可能因 token 不一致被自动登出。
+                ⚠️ 已关闭！客户端正在交互中的会话不会被打断，但 Mac 锁屏解锁后 TRAE 客户端可能因 token 不一致被自动登出。
               </div>
             )}
           </div>

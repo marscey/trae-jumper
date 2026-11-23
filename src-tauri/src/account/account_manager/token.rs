@@ -306,6 +306,10 @@ impl AccountManager {
             acc.updated_at = chrono::Utc::now().timestamp();
             acc.token_shared_with_client = true;
             acc.has_been_injected = true;
+            // 关键：同步刷新 cookies 保活时间戳。否则 cookies 续签扫描每分钟
+            // 都会判定「session超12h」→ 对活跃 OAuth 账号反复写客户端 + kill/relaunch，
+            // 造成 TRAE CN 无限重启循环。
+            acc.last_cookie_renewal_at = Some(chrono::Utc::now().timestamp());
         }
         self.save_store()?;
 
@@ -649,6 +653,13 @@ impl AccountManager {
         let mut candidates: Vec<(String, String, bool, bool, usize, bool, bool)> = Vec::new();
         let mut skipped_logs: Vec<String> = Vec::new();
         for a in &self.store.accounts {
+            // OAuth Native 账号（含 OAuth 登录后残留 cookies 的情况）完全由
+            // step 4 的 ExchangeToken Refresh Flow 覆盖，cookies 扫描不参与：
+            // 否则「session超12h」判定会对活跃 OAuth 账号反复写客户端 + kill/relaunch
+            // （OAuth 分支与 cookies 保活是两套生命周期，互不相关）。
+            if a.oauth_enabled || a.oauth_refresh_token.is_some() {
+                continue;
+            }
             let has_cookies = !a.cookies.is_empty();
             if !has_cookies {
                 // OAuth Native / 手动导入的账号没有 cookies，不会走这个分支

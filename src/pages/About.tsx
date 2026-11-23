@@ -1,8 +1,6 @@
 import { useState } from "react";
-import { relaunch } from "@tauri-apps/plugin-process";
-import { ask } from "@tauri-apps/plugin-dialog";
 import { hasTauri } from "../api";
-import { checkForUpdate, downloadUpdate, installUpdate } from "../updater";
+import type { UpdateInfo } from "../updater";
 import wxQrCode from "../assets/wx.jpg";
 import logoImage from "../assets/logo.png";
 
@@ -10,55 +8,45 @@ type UpdateStatus =
   | { state: "idle" }
   | { state: "checking" }
   | { state: "up-to-date" }
-  | { state: "available"; version: string; date: string }
-  | { state: "downloading"; percent: number }
-  | { state: "downloaded" }
+  | { state: "available"; version: string }
   | { state: "error"; message: string };
 
-export function About() {
+interface AboutProps {
+  /** App 层传入的检查更新入口：
+   *  - 内部会调用 useAutoUpdate.handleManualCheck()，有新版本时更新 autoUpdate 状态；
+   *  - 返回 UpdateInfo（有新版本）或 null（已是最新）；
+   *  - App 层会在发现新版本后自动打开 UpdateModal。 */
+  onRequestCheckUpdate?: () => Promise<UpdateInfo | null>;
+}
+
+export function About({ onRequestCheckUpdate }: AboutProps) {
   const [showImageModal, setShowImageModal] = useState(false);
   const [updateStatus, setUpdateStatus] = useState<UpdateStatus>({ state: "idle" });
 
   const hasTauriEnv = hasTauri();
 
   const handleCheckUpdate = async () => {
+    if (!onRequestCheckUpdate) {
+      setUpdateStatus({
+        state: "error",
+        message: "更新功能仅在桌面客户端中可用",
+      });
+      return;
+    }
     setUpdateStatus({ state: "checking" });
     try {
-      const info = await checkForUpdate();
+      const info = await onRequestCheckUpdate();
       if (!info) {
         setUpdateStatus({ state: "up-to-date" });
         return;
       }
-      const date = info.date;
-      setUpdateStatus({ state: "available", version: info.version, date });
-
-      const confirmed = await ask(
-        `检测到新版本 v${info.version}${date ? `（发布于 ${date}）` : ""}，是否现在下载并更新？`,
-        { title: "发现新版本", kind: "info" }
-      );
-      if (!confirmed) {
-        setUpdateStatus({ state: "idle" });
-        await info.update.close().catch(() => {});
-        return;
-      }
-
-      setUpdateStatus({ state: "downloading", percent: 0 });
-      await downloadUpdate(info.update, (percent) =>
-        setUpdateStatus({ state: "downloading", percent })
-      );
-
-      setUpdateStatus({ state: "downloaded" });
-      await installUpdate(info.update);
-      const restarted = await ask("更新已完成，是否立即重启应用？", {
-        title: "更新完成",
-        kind: "info",
-      });
-      if (restarted) {
-        await relaunch();
-      }
-      setUpdateStatus({ state: "idle" });
+      // 有新版本 → UpdateModal 会由 App 层自动弹出；这里只提示一下
+      setUpdateStatus({ state: "available", version: info.version });
     } catch (err) {
-      setUpdateStatus({ state: "error", message: err?.toString?.() || String(err) });
+      setUpdateStatus({
+        state: "error",
+        message: err?.toString?.() || String(err),
+      });
     }
   };
 
@@ -68,22 +56,26 @@ export function About() {
     }
     return (
       <div className="update-block">
-        <button className="update-btn" onClick={handleCheckUpdate} disabled={updateStatus.state === "checking" || updateStatus.state === "downloading"}>
-          {updateStatus.state === "checking"
-            ? "检查中..."
-            : updateStatus.state === "downloading"
-            ? `下载中 ${updateStatus.percent}%`
-            : "检查更新"}
+        <button
+          className="update-btn"
+          onClick={handleCheckUpdate}
+          disabled={updateStatus.state === "checking"}
+        >
+          {updateStatus.state === "checking" ? "检查中..." : "检查更新"}
         </button>
 
         {updateStatus.state === "up-to-date" && (
           <p className="update-status update-status-success">已是最新版本</p>
         )}
         {updateStatus.state === "available" && (
-          <p className="update-status">发现新版本 v{updateStatus.version}</p>
+          <p className="update-status">
+            发现新版本 v{updateStatus.version}（弹窗已打开）
+          </p>
         )}
         {updateStatus.state === "error" && (
-          <p className="update-status update-status-error">更新失败：{updateStatus.message}</p>
+          <p className="update-status update-status-error">
+            更新失败：{updateStatus.message}
+          </p>
         )}
       </div>
     );
@@ -99,7 +91,7 @@ export function About() {
         <p className="about-version">版本 {__APP_VERSION__}</p>
         {renderUpdateUi()}
         <p className="about-desc">
-          基于 Tauri 2 + Rust 的 Trae 系列 IDE 多账号管理工具。在"单活跃 Token 服务端策略"下安全地一键切换客户端账号，内嵌 WebView 无痕登录 + 自动续签让位机制彻底解决互踢问题。
+          基于 Tauri 2 + Rust 的 TRAE 系列 IDE 多账号管理工具。在"单活跃 Token 服务端策略"下安全地一键切换客户端账号，内嵌 WebView 无痕登录 + 自动续签让位机制彻底解决互踢问题。
         </p>
       </div>
 

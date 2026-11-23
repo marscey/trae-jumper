@@ -13,14 +13,16 @@ interface AddAccountModalProps {
   loginUrl?: string;
 }
 
-type AddMode = "oauth" | "manual" | "trae-ide" | "browser";
+type AddMode = "oauth" | "manual" | "trae-ide" | "browser" | "doubao-client" | "doubao" | "doubao-manual";
 // OAuth 流程阶段：opening=后端开窗+授权页加载中；waiting=等待用户在 webview 内授权；exchanging=已授权换取凭证中
 type OauthPhase = "idle" | "opening" | "waiting" | "exchanging";
 
 export function AddAccountModal({ isOpen, onClose, onAdd, onToast, onAccountAdded, clientName, loginUrl }: AddAccountModalProps) {
-  const displayName = clientName || "Trae 客户端";
+  const displayName = clientName || "TRAE 客户端";
   const loginSite = loginDomain(loginUrl);
   const [mode, setMode] = useState<AddMode>("oauth");
+  // 一级平台选择：TRAE 账号 / 豆包账号；方法级 Tab 仅在对应平台下展示
+  const [platform, setPlatform] = useState<"trae" | "doubao">("trae");
   const [tokenInput, setTokenInput] = useState("");
   const [cookiesInput, setCookiesInput] = useState("");
   const [loading, setLoading] = useState(false);
@@ -29,6 +31,8 @@ export function AddAccountModal({ isOpen, onClose, onAdd, onToast, onAccountAdde
   const [confirming, setConfirming] = useState(false);
   const [oauthPhase, setOauthPhase] = useState<OauthPhase>("idle");
   const [switching, setSwitching] = useState(false);
+  // 豆包手动 Cookie 导入
+  const [doubaoCookies, setDoubaoCookies] = useState("");
   // 用户主动取消时，startOauthLogin 的 reject 属于预期行为，静默吞掉
   const oauthCancelledRef = useRef(false);
 
@@ -301,6 +305,87 @@ export function AddAccountModal({ isOpen, onClose, onAdd, onToast, onAccountAdde
     }
   };
 
+  // 豆包浏览器登录：打开无痕子 webview 到 doubao.com（纯 Cookie 会话）
+  const handleDoubaoBrowserLogin = async () => {
+    setLoading(true);
+    setError("");
+    setBrowserLoginStarted(true);
+
+    try {
+      await api.startDoubaoBrowserLogin();
+    } catch (err: any) {
+      setError(err.message || "打开豆包登录窗口失败");
+      setBrowserLoginStarted(false);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // 确认豆包登录：读取子 webview 中 doubao.com 域 Cookie，新增账号
+  const handleDoubaoConfirmLogin = async () => {
+    setConfirming(true);
+    setError("");
+    try {
+      const name = await api.applyLoginWebviewNewDoubaoAccount();
+      setBrowserLoginStarted(false);
+      handleCloseInternal();
+      onToast?.("success", `豆包登录成功: ${name}`);
+      onAccountAdded?.();
+    } catch (err: any) {
+      const msg = err.message || "确认登录失败，请确保已在上方完成登录";
+      setError(msg);
+      if (msg.includes("已存在")) {
+        onToast?.("warning", "该账号已在列表中，无需重复添加");
+        setTimeout(() => {
+          setBrowserLoginStarted(false);
+          handleCloseInternal();
+        }, 1500);
+      }
+    } finally {
+      setConfirming(false);
+    }
+  };
+
+  // 手动粘贴 Cookie 新增豆包账号
+  const handleDoubaoManualSubmit = async (e?: React.FormEvent) => {
+    e?.preventDefault();
+    const cookies = doubaoCookies.trim();
+    if (!cookies) {
+      setError("请粘贴豆包网页端的 Cookie 串");
+      return;
+    }
+
+    setLoading(true);
+    setError("");
+    try {
+      await api.addDoubaoAccount(cookies);
+      setDoubaoCookies("");
+      handleCloseInternal();
+      onToast?.("success", "豆包账号添加成功");
+      onAccountAdded?.();
+    } catch (err: any) {
+      setError(err.message || "添加豆包账号失败");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // 从本机豆包桌面客户端导入当前登录账号（客户端登录态才具备签到资格）
+  const handleDoubaoClientImport = async () => {
+    setLoading(true);
+    setError("");
+    try {
+      const account = await api.doubaoImportFromClient();
+      handleCloseInternal();
+      onToast?.("success", `已从豆包客户端读取: ${account.name}`);
+      onAccountAdded?.();
+    } catch (err: any) {
+      setError(err.message || "从豆包客户端读取失败");
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const handleCloseInternal = () => {
     // 若登录子 webview 还开着，销毁它（fire-and-forget）
     if (browserLoginStarted) {
@@ -311,10 +396,22 @@ export function AddAccountModal({ isOpen, onClose, onAdd, onToast, onAccountAdde
     setError("");
     setTokenInput("");
     setCookiesInput("");
+    setDoubaoCookies("");
     setBrowserLoginStarted(false);
     setOauthPhase("idle");
+    setPlatform("trae");
     setMode("oauth");
     onClose();
+  };
+
+  // 切换一级平台：重置错误/开窗/OAuth 阶段，并落到该平台默认方法
+  const switchPlatform = (next: "trae" | "doubao") => {
+    if (next === platform) return;
+    setError("");
+    setBrowserLoginStarted(false);
+    setOauthPhase("idle");
+    setPlatform(next);
+    setMode(next === "doubao" ? "doubao-client" : "oauth");
   };
 
   return (
@@ -334,52 +431,112 @@ export function AddAccountModal({ isOpen, onClose, onAdd, onToast, onAccountAdde
         </div>
 
         <div className="modal-body-scrollable">
-          {/* 添加方式选择 */}
-          <div className="add-mode-tabs">
+          {/* 一级：选择账号平台 */}
+          <div className="add-mode-tabs platform-tabs">
             <button
-              className={`mode-tab ${mode === "oauth" ? "active" : ""}`}
-              onClick={() => setMode("oauth")}
-              disabled={loading}
-            >
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
-              </svg>
-              OAuth 授权登录 <span style={{ fontSize: "11px", color: "var(--color-success, #3ba55d)", marginLeft: 4 }}>推荐</span>
-            </button>
-            <button
-              className={`mode-tab ${mode === "trae-ide" ? "active" : ""}`}
-              onClick={() => setMode("trae-ide")}
+              className={`mode-tab ${platform === "trae" ? "active" : ""}`}
+              onClick={() => switchPlatform("trae")}
               disabled={loading}
             >
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                 <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/>
               </svg>
-              从 Trae 客户端读取
+              TRAE 账号
             </button>
             <button
-              className={`mode-tab ${mode === "browser" ? "active" : ""}`}
-              onClick={() => setMode("browser")}
+              className={`mode-tab ${platform === "doubao" ? "active" : ""}`}
+              onClick={() => switchPlatform("doubao")}
               disabled={loading}
             >
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                <circle cx="12" cy="12" r="10"/>
-                <line x1="2" y1="12" x2="22" y2="12"/>
-                <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>
+                <path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/>
               </svg>
-              浏览器登录（旧）
-            </button>
-            <button
-              className={`mode-tab ${mode === "manual" ? "active" : ""}`}
-              onClick={() => setMode("manual")}
-              disabled={loading}
-            >
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
-                <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
-              </svg>
-              手动输入 Token
+              豆包账号
             </button>
           </div>
+
+          {/* 二级：登录方式（Trae / 豆包各自的方式卡片） */}
+          {platform === "trae" ? (
+            <div className="add-mode-tabs">
+              <button
+                className={`mode-tab ${mode === "oauth" ? "active" : ""}`}
+                onClick={() => setMode("oauth")}
+                disabled={loading}
+              >
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+                </svg>
+                OAuth 授权登录 <span style={{ fontSize: "11px", color: "var(--color-success, #3ba55d)", marginLeft: 4 }}>推荐</span>
+              </button>
+              <button
+                className={`mode-tab ${mode === "trae-ide" ? "active" : ""}`}
+                onClick={() => setMode("trae-ide")}
+                disabled={loading}
+              >
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/>
+                </svg>
+                从 TRAE 客户端读取
+              </button>
+              <button
+                className={`mode-tab ${mode === "browser" ? "active" : ""}`}
+                onClick={() => setMode("browser")}
+                disabled={loading}
+              >
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <circle cx="12" cy="12" r="10"/>
+                  <line x1="2" y1="12" x2="22" y2="12"/>
+                  <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>
+                </svg>
+                浏览器登录（旧）
+              </button>
+              <button
+                className={`mode-tab ${mode === "manual" ? "active" : ""}`}
+                onClick={() => setMode("manual")}
+                disabled={loading}
+              >
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
+                  <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
+                </svg>
+                手动输入 Token
+              </button>
+            </div>
+          ) : (
+            <div className="add-mode-tabs">
+              <button
+                className={`mode-tab ${mode === "doubao-client" ? "active" : ""}`}
+                onClick={() => setMode("doubao-client")}
+                disabled={loading}
+              >
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/>
+                </svg>
+                从豆包客户端读取 <span style={{ fontSize: "11px", color: "var(--color-success, #3ba55d)", marginLeft: 4 }}>推荐</span>
+              </button>
+              <button
+                className={`mode-tab ${mode === "doubao" ? "active" : ""}`}
+                onClick={() => setMode("doubao")}
+                disabled={loading}
+              >
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/>
+                </svg>
+                扫码登录
+              </button>
+              <button
+                className={`mode-tab ${mode === "doubao-manual" ? "active" : ""}`}
+                onClick={() => setMode("doubao-manual")}
+                disabled={loading}
+              >
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
+                  <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
+                </svg>
+                手动粘贴 Cookie
+              </button>
+            </div>
+          )}
 
           {mode === "oauth" ? (
             /* OAuth 授权登录 */
@@ -469,8 +626,86 @@ export function AddAccountModal({ isOpen, onClose, onAdd, onToast, onAccountAdde
               /* browserLoginStarted：中部留空，子 webview（Rust 创建）占据此区域 */
               <div className="modal-body-webview-placeholder" />
             )
+          ) : mode === "doubao-client" ? (
+            /* 豆包客户端导入模式 */
+            <div className="trae-ide-mode">
+              <div className="mode-description-simple">
+                <div className="mode-icon">
+                  <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+                    <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/>
+                    <polyline points="3.27 6.96 12 12.01 20.73 6.96"/>
+                    <line x1="12" y1="22.08" x2="12" y2="12"/>
+                  </svg>
+                </div>
+                <h3>从豆包桌面客户端导入</h3>
+                <p style={{ margin: "8px 0" }}>
+                  系统将自动读取本机豆包客户端的登录态（macOS 读取 Chromium Cookies + 钥匙串解密）。
+                </p>
+                <p style={{ margin: "4px 0", fontSize: 13, color: "var(--text-secondary)" }}>
+                  <strong>首次使用说明：</strong>若钥匙串授权框弹出，请选择「始终允许」，后续不再重复授权。
+                </p>
+                <div className="form-help" style={{ marginTop: 12 }}>
+                  <details>
+                    <summary>为什么推荐此方式？</summary>
+                    <p style={{ margin: "6px 0" }}>
+                      豆包每日签到活动仅对 <strong>桌面客户端登录账号</strong> 开放，网页端 Cookie 调用签到接口会返回系统错误。
+                      此方式导入的账号可正常签到领积分。
+                    </p>
+                  </details>
+                </div>
+              </div>
+
+              {error && <div className="error-message">{error}</div>}
+            </div>
+          ) : mode === "doubao-manual" ? (
+            /* 手动粘贴 Cookie */
+            <div className="manual-mode">
+              <div className="form-section">
+                <label className="form-label">
+                  豆包 Cookie <span className="required">*</span>
+                </label>
+                <textarea
+                  value={doubaoCookies}
+                  onChange={(e) => setDoubaoCookies(e.target.value)}
+                  placeholder='粘贴 www.doubao.com 页面请求中的完整 Cookie 值...'
+                  rows={6}
+                  disabled={loading}
+                />
+                <div className="form-help">
+                  <details>
+                    <summary>如何获取豆包 Cookie？</summary>
+                    <ol>
+                      <li>浏览器打开 <a href="https://www.doubao.com/chat/" target="_blank" rel="noopener noreferrer">豆包网页端</a> 并登录</li>
+                      <li>按 <kbd>F12</kbd> 打开开发者工具，切换到 <strong>Network</strong> 标签</li>
+                      <li>刷新页面，点击任意一个 <code>doubao.com</code> 请求</li>
+                      <li>在 <strong>Headers</strong> 中复制完整 <code>Cookie</code> 值（含会话 Cookie）</li>
+                    </ol>
+                  </details>
+                </div>
+              </div>
+              {error && <div className="error-message">{error}</div>}
+            </div>
+          ) : mode === "doubao" && !browserLoginStarted ? (
+            /* 豆包扫码登录 */
+            <div className="trae-ide-mode">
+              <div className="mode-description-simple">
+                <div className="mode-icon">
+                  <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+                    <path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/>
+                  </svg>
+                </div>
+                <h3>豆包扫码登录</h3>
+                <p>
+                  在下方内嵌窗口中打开豆包网页端，扫码登录后系统自动提取 Cookies 并添加账号。
+                </p>
+              </div>
+              {error && <div className="error-message">{error}</div>}
+            </div>
+          ) : mode === "doubao" ? (
+            /* 豆包 browserLoginStarted：子 webview 占据此区域 */
+            <div className="modal-body-webview-placeholder" />
           ) : (
-            /* 手动输入模式 */
+            /* 手动输入模式（Trae manual） */
             <div className="manual-mode">
               {/* Token 输入 */}
               <div className="form-section">
@@ -596,9 +831,35 @@ export function AddAccountModal({ isOpen, onClose, onAdd, onToast, onAccountAdde
                   onClick={handleSwitchOauthAccount}
                   // opening 阶段 webview 尚未就绪不可切换；exchanging 阶段流程已接近完成
                   disabled={oauthPhase !== "waiting" || switching}
-                  title="清除当前授权页登录信息，使用其他 Trae 账号登录"
+                  title="清除当前授权页登录信息，使用其他 TRAE 账号登录"
                 >
                   {switching ? "切换中..." : "切换账号"}
+                </button>
+              </div>
+            </div>
+          ) : mode === "doubao" && browserLoginStarted ? (
+            /* 豆包开窗后：状态行 + 确认按钮 */
+            <div className="browser-actions-container">
+              {error ? (
+                <div className="probe-status-line" style={{ color: "var(--color-error, #e5484d)" }}>
+                  {error}
+                </div>
+              ) : (
+                <div className="probe-status-line" style={{ color: "var(--color-warning, #f0a030)" }}>
+                  请在上方扫码登录豆包后点击"确认登录"
+                </div>
+              )}
+              <div className="modal-actions-row">
+                <button type="button" onClick={handleCloseInternal} disabled={confirming}>
+                  取消登录
+                </button>
+                <button
+                  type="button"
+                  className="primary"
+                  onClick={handleDoubaoConfirmLogin}
+                  disabled={confirming}
+                >
+                  {confirming ? "确认中..." : "确认登录"}
                 </button>
               </div>
             </div>
@@ -623,7 +884,7 @@ export function AddAccountModal({ isOpen, onClose, onAdd, onToast, onAccountAdde
                   onClick={handleReadTraeAccount}
                   disabled={loading}
                 >
-                  {loading ? "读取中..." : "读取 Trae 账号"}
+                  {loading ? "读取中..." : "读取 TRAE 账号"}
                 </button>
               ) : mode === "browser" ? (
                 <button
@@ -633,6 +894,33 @@ export function AddAccountModal({ isOpen, onClose, onAdd, onToast, onAccountAdde
                   disabled={loading}
                 >
                   {loading ? "打开中..." : "打开登录界面"}
+                </button>
+              ) : mode === "doubao-manual" ? (
+                <button
+                  type="button"
+                  className="primary"
+                  onClick={() => handleDoubaoManualSubmit()}
+                  disabled={loading}
+                >
+                  {loading ? "添加中..." : "添加豆包账号"}
+                </button>
+              ) : mode === "doubao-client" ? (
+                <button
+                  type="button"
+                  className="primary"
+                  onClick={handleDoubaoClientImport}
+                  disabled={loading}
+                >
+                  {loading ? "读取中..." : "从豆包客户端读取"}
+                </button>
+              ) : mode === "doubao" ? (
+                <button
+                  type="button"
+                  className="primary"
+                  onClick={handleDoubaoBrowserLogin}
+                  disabled={loading}
+                >
+                  {loading ? "打开中..." : "打开扫码登录界面"}
                 </button>
               ) : (
                 <button

@@ -12,8 +12,22 @@ interface UseCheckinActionsParams {
   addToast: AddToastFn;
   setConfirmModal: SetStateFn<ConfirmModalState | null>;
   setInfoModal: SetStateFn<InfoModalState | null>;
+  /** 当前 tab 平台过滤（trae | doubao） */
+  platformFilter: "trae" | "doubao";
+  /** 当前 tab 下选中的账号 id（用于批量签到"没选=全部、选了=选中"） */
+  scopedSelectedIds: string[];
   /** 单账号数据刷新（来自 useTokenActions.handleRefreshAccount，签到成功后刷新积分） */
   refreshAccount: (accountId: string) => Promise<void>;
+}
+
+/** 辅助：按平台过滤账号 */
+function filterByPlatform<T extends { platform: string }>(
+  list: T[],
+  p: "trae" | "doubao"
+): T[] {
+  return list.filter((a) =>
+    p === "doubao" ? a.platform === "doubao" : a.platform !== "doubao"
+  );
 }
 
 /**
@@ -25,6 +39,8 @@ export function useCheckinActions({
   addToast,
   setConfirmModal,
   setInfoModal,
+  platformFilter,
+  scopedSelectedIds,
   refreshAccount,
 }: UseCheckinActionsParams) {
   // 批量签到 loading
@@ -70,80 +86,221 @@ export function useCheckinActions({
     }
   }, [accounts, setAccounts, addToast, refreshAccount]);
 
-  // 批量签到所有账号
-  const handleCheckinAll = useCallback(async () => {
-    if (accounts.length === 0) {
-      addToast("warning", "没有账号可签到");
+  // 豆包签到（D10 checkin 接口既是查询也是 claim，幂等）
+  const handleDoubaoCheckin = useCallback(async (accountId: string) => {
+    const account = accounts.find((a) => a.id === accountId);
+    if (!account) return;
+    const name = account.name || account.email || accountId.slice(0, 8);
+    // 本地日期（豆包返回 YYYY-MM-DD 为本地时区，不能用 toISOString 的 UTC）
+    const now = new Date();
+    const pad = (n: number) => String(n).padStart(2, "0");
+    const today = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+    // 已签到（本地缓存判断）直接提示，避免重复请求
+    if (account.doubao_checkin?.checked_in && account.doubao_checkin.checkin_date === today) {
+      addToast("warning", `${name}：今日已签到（连续 ${account.doubao_checkin.continuous_days} 天）`);
       return;
     }
-    setCheckinLoading(true);
-    addToast(
-      "info",
-      `正在签到 ${accounts.length} 个账号（已签到的会自动跳过，仅连续签到时才有延迟）...`
-    );
+    addToast("info", `正在为 ${name} 执行豆包签到...`);
     try {
-      const results = await api.checkinAll();
-      let successCount = 0;
-      let skipCount = 0;
-      let failCount = 0;
-      for (const r of results) {
-        if (r.code === 0) {
-          if (r.skipped) skipCount++;
-          else successCount++;
-        } else {
-          failCount++;
-        }
-      }
-      // 更新已签到账号的本地缓存状态
-      const updated = new Map<string, boolean>();
-      for (const r of results) {
-        if (r.code === 0) updated.set(r.account_id, true);
-      }
-      if (updated.size > 0) {
-        setAccounts((prev) =>
-          prev.map((a) =>
-            updated.has(a.id)
-              ? { ...a, checkin_status: { code: 0, message: "success", checked_in: true, credits: 200, enable: true } }
-              : a
-          )
+      const view = await api.doubaoCheckin(accountId);
+      setAccounts((prev) =>
+        prev.map((a) => (a.id === accountId ? { ...a, doubao_checkin: view } : a))
+      );
+      if (view.checked_in) {
+        addToast(
+          "success",
+          `${name} 签到成功！连续 ${view.continuous_days} 天，+${view.reward_amount} 额度`
         );
-      }
-      // 重新加载所有账号积分汇总，把签到得到的 +200 反映出来
-      try {
-        const refreshed = await Promise.allSettled(
-          accounts.map((a) => api.getAccountCredits(a.id))
-        );
-        setAccounts((prev) =>
-          prev.map((account) => {
-            const idx = accounts.findIndex((a) => a.id === account.id);
-            if (idx < 0) return account;
-            const r = refreshed[idx];
-            return {
-              ...account,
-              credits: r?.status === "fulfilled" ? r.value : account.credits,
-            };
-          })
-        );
-      } catch (e) {
-        console.warn("[WARN] 签到后刷新积分汇总失败:", e);
-      }
-
-      // 统计汇总 toast
-      const parts: string[] = [];
-      if (successCount > 0) parts.push(`签到成功 ${successCount} 个`);
-      if (skipCount > 0) parts.push(`已签到跳过 ${skipCount} 个`);
-      if (failCount > 0) parts.push(`失败 ${failCount} 个`);
-      if (failCount === 0) {
-        addToast("success", `签到完成：${parts.join("，")}`);
       } else {
-        addToast("warning", `签到完成：${parts.join("，")}`);
+        addToast("warning", `${name}：签到状态未更新`);
       }
+      refreshAccount(accountId).catch(() => {});
+    } catch (err: any) {
+      addToast("error", err.message || "豆包签到失败");
+    }
+  }, [accounts, setAccounts, addToast, refreshAccount]);
+
+  // 批量签到：按当前 tab 平台分别调 Trae / 豆包签到
+  // - 没选 → 当前 tab 全部账号
+  // - 有选 → 当前 tab 下选中的
+  const handleCheckinAll = useCallback(async () => {
+    const scoped = filterByPlatform(accounts, platformFilter);
+    const ids = scopedSelectedIds.length > 0
+      ? scopedSelectedIds.filter((id) => scoped.some((a) => a.id === id))
+      : scoped.map((a) => a.id);
+
+    if (ids.length === 0) {
+      addToast("warning", `暂无${platformFilter === "trae" ? "Trae" : "豆包"}账号可签到`);
+      return;
+    }
+
+    setCheckinLoading(true);
+
+    if (platformFilter === "doubao") {
+      // 豆包：串行调 doubaoCheckin（后端已实现批量，但返回不带 accountId，
+      // 我们这里按 ids 过滤后调 api.doubaoCheckinAll，再关联账号）
+      addToast("info", `正在为 ${ids.length} 个豆包账号执行签到...`);
+      try {
+        // doubaoCheckinAll 目前返回 View[] 不带 accountId 关联，
+        // 改走串行单账号调用，精确感知每个账号结果
+        let ok = 0, skip = 0, fail = 0;
+        const updatedPairs: [string, import("../../types").DoubaoCheckinView][] = [];
+        for (const id of ids) {
+          try {
+            const v = await api.doubaoCheckin(id);
+            updatedPairs.push([id, v]);
+            if (v.checked_in) {
+              if (new Date(v.checkin_date || "").toDateString() === new Date().toDateString()) {
+                ok++;
+              } else {
+                skip++;
+              }
+            } else {
+              fail++;
+            }
+          } catch (e: any) {
+            fail++;
+            console.warn(`[WARN] 豆包签到 account=${id}:`, e?.message || e);
+          }
+        }
+        // 更新本地缓存
+        if (updatedPairs.length > 0) {
+          setAccounts((prev) =>
+            prev.map((a) => {
+              const pair = updatedPairs.find(([id]) => id === a.id);
+              if (pair) return { ...a, doubao_checkin: pair[1] };
+              return a;
+            })
+          );
+          // 刷额度（doubao_quota）—— 签到获得 reward_amount，本地 quota 停留在旧值
+          Promise.allSettled(
+            updatedPairs.map(([id]) => refreshAccount(id))
+          ).catch(() => {});
+        }
+        const parts: string[] = [];
+        if (ok > 0) parts.push(`签到成功 ${ok}`);
+        if (skip > 0) parts.push(`今日已签 ${skip}`);
+        if (fail > 0) parts.push(`失败 ${fail}`);
+        addToast(
+          fail > 0 && ok === 0 ? "error" : ok === 0 && fail === 0 ? "warning" : "success",
+          parts.join("，") || "无操作"
+        );
+      } catch (err: any) {
+        addToast("error", err.message || "豆包批量签到失败");
+      } finally {
+        setCheckinLoading(false);
+      }
+      return;
+    }
+
+    // ==== Trae 路径 ====
+    // 全量 → 走后端 checkinAll（带 skip 统计）；有选 → 串行调单账号
+    if (scopedSelectedIds.length === 0) {
+      addToast(
+        "info",
+        `正在签到 ${ids.length} 个 Trae 账号（已签到的会自动跳过，仅连续签到时才有延迟）...`
+      );
+      try {
+        const results = await api.checkinAll();
+        let successCount = 0;
+        let skipCount = 0;
+        let failCount = 0;
+        for (const r of results) {
+          if (r.code === 0) {
+            if (r.skipped) skipCount++;
+            else successCount++;
+          } else {
+            failCount++;
+          }
+        }
+        const updated = new Map<string, boolean>();
+        for (const r of results) {
+          if (r.code === 0) updated.set(r.account_id, true);
+        }
+        if (updated.size > 0) {
+          setAccounts((prev) =>
+            prev.map((a) =>
+              updated.has(a.id)
+                ? { ...a, checkin_status: { code: 0, message: "success", checked_in: true, credits: 200, enable: true } }
+                : a
+            )
+          );
+        }
+        // 刷新积分
+        try {
+          const refreshed = await Promise.allSettled(
+            ids.map((id) => api.getAccountCredits(id))
+          );
+          setAccounts((prev) =>
+            prev.map((account) => {
+              const idx = ids.findIndex((id) => id === account.id);
+              if (idx < 0) return account;
+              const r = refreshed[idx];
+              return {
+                ...account,
+                credits: r?.status === "fulfilled" ? r.value : account.credits,
+              };
+            })
+          );
+        } catch (e) {
+          console.warn("[WARN] 签到后刷新积分汇总失败:", e);
+        }
+        const parts: string[] = [];
+        if (successCount > 0) parts.push(`签到成功 ${successCount} 个`);
+        if (skipCount > 0) parts.push(`今日已签 ${skipCount} 个`);
+        if (failCount > 0) parts.push(`失败 ${failCount} 个`);
+        addToast(
+          failCount > 0 && successCount === 0 ? "error" : successCount === 0 && failCount === 0 ? "info" : "success",
+          parts.join("，") || "无账号签到"
+        );
+      } catch (err: any) {
+        console.error("[ERROR] checkinAll failed:", err);
+        addToast("error", err?.message || "批量签到失败");
+      } finally {
+        setCheckinLoading(false);
+      }
+      return;
+    }
+
+    // 有选中 → 串行单账号
+    addToast("info", `正在为 ${ids.length} 个选中的 Trae 账号执行签到...`);
+    try {
+      let ok = 0, skip = 0, fail = 0;
+      for (const id of ids) {
+        try {
+          const s = await api.checkinStatus(id);
+          if (s.code === 0 && s.checked_in) {
+            skip++;
+            continue;
+          }
+          const r = await api.checkin(id);
+          if (r.code === 0) {
+            ok++;
+            // 签到成功 → 本地立即标记 checked_in=true，而不是把签到前 status 写回
+            setAccounts((prev) =>
+              prev.map((a) => a.id === id ? {
+                ...a,
+                checkin_status: { code: 0, message: "success", checked_in: true, credits: 200, enable: true },
+              } : a)
+            );
+            await refreshAccount(id).catch(() => {});
+          } else {
+            fail++;
+          }
+        } catch { fail++; }
+      }
+      addToast(
+        fail > 0 && ok === 0 ? "error" : ok === 0 && fail === 0 ? "info" : "success",
+        (ok > 0 ? `签到成功 ${ok} 个，` : "") +
+        (skip > 0 ? `今日已签 ${skip} 个，` : "") +
+        (fail > 0 ? `失败 ${fail} 个` : "无操作")
+      );
     } catch (err: any) {
       addToast("error", err.message || "批量签到失败");
     } finally {
       setCheckinLoading(false);
     }
-  }, [accounts, setAccounts, addToast]);
+  }, [accounts, platformFilter, scopedSelectedIds, setAccounts, addToast, refreshAccount]);
 
   // 查看账号签到请求头配置（右键菜单 → 签到请求头）
   const handleViewCheckinHeaders = useCallback(async (accountId: string) => {
@@ -294,6 +451,7 @@ export function useCheckinActions({
     checkinLoading,
     handleCheckin,
     handleCheckinAll,
+    handleDoubaoCheckin,
     handleViewCheckinHeaders,
     handleResetCheckinDevice,
   };

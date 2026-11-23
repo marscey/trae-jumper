@@ -38,6 +38,21 @@ export function useTokenActions({
     setRefreshingIds((prev) => new Set(prev).add(accountId));
 
     try {
+      const current = accounts.find((a) => a.id === accountId);
+      if (current?.platform === "doubao") {
+        // 豆包：刷新资料 + 额度概览（D2），不走 Trae 用量/积分接口
+        const [account, quota] = await Promise.all([
+          api.getAccount(accountId).catch(() => null),
+          api.getDoubaoQuota(accountId).catch(() => null),
+        ]);
+        setAccounts((prev) =>
+          prev.map((a) =>
+            a.id === accountId ? { ...a, ...(account || {}), doubao_quota: quota } : a
+          )
+        );
+        addToast("success", "数据刷新成功");
+        return;
+      }
       const [account, usage, credits] = await Promise.all([
         api.getAccount(accountId).catch(() => null),
         api.getAccountUsage(accountId),
@@ -59,7 +74,7 @@ export function useTokenActions({
         return next;
       });
     }
-  }, [refreshingIds, setAccounts, markTokenExpired, addToast]);
+  }, [refreshingIds, accounts, setAccounts, markTokenExpired, addToast]);
 
   // 手动续签 Token：调用后端 refresh_token（cookies 续签），成功后刷新账号数据
   const handleManualRefreshToken = useCallback(async (accountId: string) => {

@@ -1,4 +1,4 @@
-import type { CheckinConfig, CheckinStatusResult, CreditSummary, UsageSummary } from "../types";
+import type { CheckinConfig, CheckinStatusResult, CreditSummary, DoubaoCheckinView, DoubaoQuotaView, UsageSummary } from "../types";
 
 interface AccountCardProps {
   account: {
@@ -8,6 +8,7 @@ interface AccountCardProps {
     avatar_url: string;
     plan_type: string;
     created_at: number;
+    platform?: "trae" | "doubao";
     is_current?: boolean;
     is_client_active?: boolean;
     active_in_clients?: string[];
@@ -21,9 +22,12 @@ interface AccountCardProps {
     checkin_status?: CheckinStatusResult;
     /** per-account 自动续签后重启客户端覆盖开关 */
     restart_after_refresh_override?: boolean | null;
+    /** 豆包签到状态（仅 doubao 平台） */
+    doubao_checkin?: DoubaoCheckinView | null;
   };
   usage: UsageSummary | null;
   credits: CreditSummary | null;
+  doubaoQuota: DoubaoQuotaView | null;
   creditsLoading?: boolean;
   selected: boolean;
   onSelect: (id: string) => void;
@@ -37,12 +41,12 @@ interface AccountCardProps {
   checkinConfig?: CheckinConfig | null;
 }
 
-// 登录来源展示名（始终显示在 Trae 账号旁边，不参与 Token 让位推导）
-function sourceLabel(src?: string): string {
+// 登录来源展示名（始终显示在账号旁边，不参与 Token 让位推导）
+function sourceLabel(src?: string, platform?: string): string {
   switch (src) {
     case "webview_oauth": return "WebView · OAuth自管";
     case "webview_cookie": return "WebView · Cookie自管";
-    case "client_import": return "Trae客户端读取";
+    case "client_import": return platform === "doubao" ? "豆包客户端读取" : "TRAE 客户端读取";
     case "manual_token": return "手动 Token/Cookie";
     default: return "未分类";
   }
@@ -64,7 +68,8 @@ function sourceTagClass(): string {
   return "login-source-tag";
 }
 
-export function AccountCard({ account, usage, credits, creditsLoading, selected, onSelect, onContextMenu, onViewDetail, onRefresh, refreshing, onRenewClient, renewingClient, checkinConfig }: AccountCardProps) {
+export function AccountCard({ account, usage, credits, doubaoQuota, creditsLoading, selected, onSelect, onContextMenu, onViewDetail, onRefresh, refreshing, onRenewClient, renewingClient, checkinConfig }: AccountCardProps) {
+  const isDoubao = account.platform === "doubao";
   const isCredits = !!credits?.is_credits_billing;
 
   // 将客户端显示名映射为短标签
@@ -87,6 +92,12 @@ export function AccountCard({ account, usage, credits, creditsLoading, selected,
   const formatCredits = (v: number) => {
     const n = Number.isFinite(v) ? v : 0;
     return n.toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  };
+
+  // 额度数值：整数不带小数，非整数保留两位
+  const formatQuota = (v: number) => {
+    const n = Number.isFinite(v) ? v : 0;
+    return Number.isInteger(n) ? n.toLocaleString("zh-CN") : n.toFixed(2);
   };
 
   const formatDate = (timestamp: number) => {
@@ -176,10 +187,48 @@ export function AccountCard({ account, usage, credits, creditsLoading, selected,
     : "无过期时间信息";
 
   const planLabel = (() => {
+    if (isDoubao) return doubaoQuota?.plan_name || account.plan_type || "免费体验";
     const raw = isCredits ? credits?.plan_name || "Credits" : usage?.plan_type || account.plan_type || "Free";
     if (raw && String(raw).toLowerCase() === "free") return "免费";
     return raw;
   })();
+
+  // 豆包额度包：最近到期且仍有剩余的包
+  const doubaoNearestExpiry = (() => {
+    if (!isDoubao || !doubaoQuota) return null;
+    const withLeft = doubaoQuota.packages.filter((p) => p.total_amount > p.used_amount && p.end_time_ms);
+    if (withLeft.length === 0) return null;
+    withLeft.sort((a, b) => (a.end_time_ms ?? 0) - (b.end_time_ms ?? 0));
+    return withLeft[0];
+  })();
+
+  // 豆包额度汇总：优先服务端窗口聚合（总量/已用/剩余/百分比），无窗口数据时按额度包求和兜底
+  const doubaoAgg = (() => {
+    if (!isDoubao || !doubaoQuota) return null;
+    const agg = doubaoQuota.aggregate;
+    if (agg && agg.total_amount > 0) {
+      return {
+        total: agg.total_amount,
+        used: agg.used_amount,
+        left: agg.left_amount,
+        hasPackages: true,
+        pct: agg.used_percent,
+      };
+    }
+    let total = 0;
+    let used = 0;
+    for (const p of doubaoQuota.packages) {
+      total += Number(p.total_amount) || 0;
+      used += Number(p.used_amount) || 0;
+    }
+    const hasPackages = doubaoQuota.packages.length > 0 && total > 0;
+    const pct = total > 0 ? Math.round((used / total) * 100) : 0;
+    return { total, used, left: Math.max(0, total - used), hasPackages, pct };
+  })();
+  const doubaoNearestLeft = doubaoNearestExpiry
+    ? Math.max(0, Number(doubaoNearestExpiry.total_amount) - Number(doubaoNearestExpiry.used_amount))
+    : 0;
+  const doubaoBarColor = doubaoAgg ? getUsageColor(doubaoAgg.pct) : "var(--success)";
 
   const { totalUsed, totalLimit, totalLeft, usagePercent } = isCredits
     ? (() => {
@@ -285,9 +334,9 @@ export function AccountCard({ account, usage, credits, creditsLoading, selected,
             )}
           </div>
           <div className="card-name">
-            Trae 账号
-            <span className={sourceTagClass()} title={`登录来源：${sourceLabel(account.login_source)}`}>
-              {sourceLabel(account.login_source)}
+            {isDoubao ? "豆包账号" : "TRAE 账号"}
+            <span className={sourceTagClass()} title={`登录来源：${sourceLabel(account.login_source, account.platform)}`}>
+              {sourceLabel(account.login_source, account.platform)}
             </span>
           </div>
         </div>
@@ -296,13 +345,13 @@ export function AccountCard({ account, usage, credits, creditsLoading, selected,
           <span className={`plan-badge ${planLabel.toLowerCase() === "free" ? "free" : ""}`}>
             {planLabel}
           </span>
-          <span className={`status-tag ${statusClass}`} title={expiryTooltip}>
+          <span className={`status-tag ${isDoubao ? "normal" : statusClass}`} title={isDoubao ? "豆包 Cookie 会话" : expiryTooltip}>
             <span className="status-dot"></span>
-            {statusText}
-            {expiryHint && <span className="status-hint"> · {expiryHint}</span>}
+            {isDoubao ? "正常" : statusText}
+            {!isDoubao && expiryHint && <span className="status-hint"> · {expiryHint}</span>}
           </span>
-          {/* 续签按钮：cookies 模式或 OAuth 模式都可 */}
-          {onRefresh && (account.has_cookies || account.oauth_enabled) && !account.is_client_active && (
+          {/* 续签按钮：cookies 模式或 OAuth 模式都可（豆包账号不参与 Token 续签） */}
+          {onRefresh && !isDoubao && (account.has_cookies || account.oauth_enabled) && !account.is_client_active && (
             <button
               className={`refresh-btn ${refreshing ? "loading" : ""}`}
               title={account.oauth_enabled ? "手动续签 Token（ExchangeToken Refresh Flow）" : "手动续签 Token（GetUserToken via cookies）"}
@@ -318,7 +367,7 @@ export function AccountCard({ account, usage, credits, creditsLoading, selected,
             </button>
           )}
           {/* 写回客户端按钮：两种模式服务端都会作废旧 access_token → 都需要重启客户端加载新 token */}
-          {onRenewClient && account.is_client_active && (account.has_cookies || account.oauth_enabled) && (
+          {onRenewClient && !isDoubao && account.is_client_active && (account.has_cookies || account.oauth_enabled) && (
             <button
               className={`refresh-btn ${renewingClient ? "loading" : ""}`}
               title="续签并写回客户端（服务端作废旧 token，需重启客户端加载新 token）"
@@ -333,7 +382,7 @@ export function AccountCard({ account, usage, credits, creditsLoading, selected,
               {renewingClient ? "写回中" : "写回客户端"}
             </button>
           )}
-          {account.checkin_status && tokenStatus !== "expired" && (
+          {!isDoubao && account.checkin_status && tokenStatus !== "expired" && (
             account.checkin_status.code === 0 ? (
               account.checkin_status.checked_in ? (
                 <span className="checkin-tag checked" title="今日已完成签到">
@@ -359,11 +408,81 @@ export function AccountCard({ account, usage, credits, creditsLoading, selected,
               </span>
             )
           )}
+          {isDoubao && account.doubao_checkin && (
+            account.doubao_checkin.checked_in ? (
+              <span className="checkin-tag checked" title={`已签到 · 连续 ${account.doubao_checkin.continuous_days} 天 · +${account.doubao_checkin.reward_amount} 额度`}>
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" width="10" height="10">
+                  <path d="M20 6L9 17l-5-5"/>
+                </svg>
+                已签 {account.doubao_checkin.continuous_days}天
+              </span>
+            ) : (
+              <span className="checkin-tag unchecked" title="今日尚未签到">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" width="10" height="10">
+                  <rect x="3" y="4" width="18" height="18" rx="2"/>
+                  <line x1="16" y1="2" x2="16" y2="6"/>
+                  <line x1="8" y1="2" x2="8" y2="6"/>
+                  <line x1="3" y1="10" x2="21" y2="10"/>
+                </svg>
+                待签到
+              </span>
+            )
+          )}
         </div>
       </div>
 
       <div className="card-usage">
-        {creditsLoading && !credits && !usage ? (
+        {isDoubao ? (
+          doubaoQuota ? (
+            <>
+              <div className="usage-header-row">
+                <div className="usage-header-label">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <circle cx="12" cy="12" r="10"/>
+                    <path d="M12 6v6l4 2"/>
+                  </svg>
+                  剩余额度
+                </div>
+                <div className="usage-header-pct" style={{ color: doubaoBarColor }}>
+                  {doubaoAgg?.hasPackages ? `${doubaoAgg.pct}%` : `${doubaoQuota.packages.length} 个额度包`}
+                </div>
+              </div>
+              {doubaoAgg?.hasPackages && (
+                <div className="usage-bar">
+                  <div
+                    className="usage-bar-fill"
+                    style={{ width: `${Math.min(doubaoAgg.pct, 100)}%`, background: doubaoBarColor }}
+                  />
+                </div>
+              )}
+              <div className="usage-bottom-row">
+                <div className="usage-left-group">
+                  <span className="usage-left-primary" style={{ color: "var(--success)" }}>
+                    {doubaoQuota.total_remaining}
+                  </span>
+                  {doubaoAgg?.hasPackages && (
+                    <>
+                      <span className="usage-divider">/</span>
+                      <span className="usage-total">{formatQuota(doubaoAgg.total)}</span>
+                    </>
+                  )}
+                </div>
+                <div className="usage-right-used">
+                  {doubaoAgg?.hasPackages ? (
+                    <>已使用 <strong>{formatQuota(doubaoAgg.used)}</strong></>
+                  ) : (
+                    doubaoQuota.plan_name
+                  )}
+                </div>
+              </div>
+            </>
+          ) : (
+            <div className="usage-loading-placeholder">
+              <div className="usage-loading-shimmer" />
+              <div className="usage-loading-shimmer short" />
+            </div>
+          )
+        ) : creditsLoading && !credits && !usage ? (
           // 积分数据加载占位，避免显示成"无数据"
           <div className="usage-loading-placeholder">
             <div className="usage-loading-shimmer" />
@@ -404,6 +523,21 @@ export function AccountCard({ account, usage, credits, creditsLoading, selected,
       </div>
 
       <div className="card-meta">
+        {isDoubao ? (
+          doubaoNearestExpiry?.end_time_ms ? (
+            <span className="meta-item" title={doubaoNearestExpiry.display_name || "最近到期额度包"}>
+              <span className="credit-number">{formatQuota(doubaoNearestLeft)}</span>
+              额度将于
+              <span className={getExpiryClass(Math.floor(doubaoNearestExpiry.end_time_ms! / 1000))}>
+                {formatDateOnly(Math.floor(doubaoNearestExpiry.end_time_ms! / 1000))}
+              </span>
+              到期
+            </span>
+          ) : (
+            <span className="meta-item">暂无额度包</span>
+          )
+        ) : (
+          <>
         {isCredits && expiryInfo ? (
           totalAvailableCredits > 0 ? (
             <>
@@ -477,6 +611,8 @@ export function AccountCard({ account, usage, credits, creditsLoading, selected,
               {cookieRenewalTime ? formatShort(cookieRenewalTime) : "尚未续签"}
             </span>
           </span>
+        )}
+          </>
         )}
       </div>
     </div>

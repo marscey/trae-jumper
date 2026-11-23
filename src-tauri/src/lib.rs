@@ -1,5 +1,6 @@
 mod api;
 mod account;
+mod doubao_client;
 mod machine;
 mod login;
 mod crypto;
@@ -22,7 +23,7 @@ use tauri::{
 };
 
 use account::{Account, AccountBrief, AccountManager, CheckinConfig, CheckinDeviceProfile, CurrentClientLogin};
-use api::{CheckinHeaderEntry, CreditSummary, UsageQueryResponse, UsageSummary};
+use api::{CheckinHeaderEntry, CreditSummary, DoubaoCheckinView, DoubaoQuotaView, DoubaoTimelineView, UsageQueryResponse, UsageSummary};
 
 /// 应用状态
 pub struct AppState {
@@ -113,6 +114,77 @@ async fn get_account_usage(account_id: String, state: State<'_, AppState>) -> Re
 async fn get_account_credits(account_id: String, state: State<'_, AppState>) -> Result<CreditSummary> {
     let mut manager = state.account_manager.lock().await;
     manager.get_account_credits(&account_id).await.map_err(Into::into)
+}
+
+/// 通过 Cookie 新增豆包账号（D1 校验身份 + D2 初始额度快照）
+#[tauri::command]
+async fn add_doubao_account(cookies: String, state: State<'_, AppState>) -> Result<Account> {
+    let mut manager = state.account_manager.lock().await;
+    manager.add_doubao_account(cookies).await.map_err(Into::into)
+}
+
+/// 获取豆包账号额度概览（D2，归一化视图；含分组汇总 + 额度包明细）
+#[tauri::command]
+async fn get_doubao_quota(account_id: String, state: State<'_, AppState>) -> Result<DoubaoQuotaView> {
+    let mut manager = state.account_manager.lock().await;
+    manager.get_doubao_quota(&account_id).await.map_err(Into::into)
+}
+
+/// 获取豆包账号消耗流水（D4，近 30 天窗口，可按类别过滤 / 翻页）
+#[tauri::command]
+async fn get_doubao_timeline(
+    account_id: String,
+    category: Option<i32>,
+    cursor: Option<String>,
+    page_size: Option<i32>,
+    state: State<'_, AppState>,
+) -> Result<DoubaoTimelineView> {
+    let mut manager = state.account_manager.lock().await;
+    manager
+        .get_doubao_timeline(&account_id, category, cursor, page_size)
+        .await
+        .map_err(Into::into)
+}
+
+/// 查询豆包账号签到状态（D10，幂等重复调用安全）
+#[tauri::command]
+async fn doubao_checkin_status(account_id: String, state: State<'_, AppState>) -> Result<DoubaoCheckinView> {
+    let mut manager = state.account_manager.lock().await;
+    manager.doubao_checkin_status(&account_id).await.map_err(Into::into)
+}
+
+/// 执行豆包签到（D10 checkin 接口本身即 claim，幂等）
+#[tauri::command]
+async fn doubao_checkin(account_id: String, state: State<'_, AppState>) -> Result<DoubaoCheckinView> {
+    let mut manager = state.account_manager.lock().await;
+    manager.doubao_checkin(&account_id).await.map_err(Into::into)
+}
+
+/// 批量签到所有豆包账号（串行，避免风控）
+#[tauri::command]
+async fn doubao_checkin_all(state: State<'_, AppState>) -> Result<Vec<DoubaoCheckinView>> {
+    let mut manager = state.account_manager.lock().await;
+    manager.doubao_checkin_all().await.map_err(Into::into)
+}
+
+/// 批量查询所有豆包账号签到状态（串行，接口幂等，失败账号返回 None）
+#[tauri::command]
+async fn doubao_checkin_status_all(state: State<'_, AppState>) -> Result<Vec<(String, Option<DoubaoCheckinView>)>> {
+    let mut manager = state.account_manager.lock().await;
+    Ok(manager.doubao_checkin_status_all().await)
+}
+
+/// 从本机豆包桌面客户端导入当前登录账号（客户端登录态才具备签到资格）
+#[tauri::command]
+async fn doubao_import_from_client(state: State<'_, AppState>) -> Result<AccountBrief> {
+    let mut manager = state.account_manager.lock().await;
+    let account = manager.doubao_import_from_client().await.map_err(anyhow::Error::from)?;
+    manager
+        .get_accounts()
+        .into_iter()
+        .find(|b| b.id == account.id)
+        .ok_or_else(|| anyhow::anyhow!("导入后未找到账号"))
+        .map_err(Into::into)
 }
 
 /// 更新账号 Token
@@ -493,6 +565,24 @@ async fn apply_login_webview_new_account(
     state: State<'_, AppState>,
 ) -> Result<String> {
     login::apply_login_webview_new_account_inner(&app, state.account_manager.clone())
+        .await
+        .map_err(Into::into)
+}
+
+/// 打开豆包浏览器登录窗口（纯 Cookie 会话，无痕 webview）
+#[tauri::command]
+async fn start_doubao_browser_login(app: AppHandle) -> Result<()> {
+    login::start_doubao_login_flow(app).await.map_err(|e| ApiError { message: e })?;
+    Ok(())
+}
+
+/// 应用豆包登录窗口当前 Cookie 新增账号（手动确认调用，成功后关闭登录窗口）
+#[tauri::command]
+async fn apply_login_webview_new_doubao_account(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<String> {
+    login::apply_login_webview_new_doubao_inner(&app, state.account_manager.clone())
         .await
         .map_err(Into::into)
 }
@@ -896,6 +986,14 @@ pub fn run() {
             renew_token_and_write_client,
             get_account_usage,
             get_account_credits,
+            add_doubao_account,
+            get_doubao_quota,
+            get_doubao_timeline,
+            doubao_checkin_status,
+            doubao_checkin,
+            doubao_checkin_all,
+            doubao_checkin_status_all,
+            doubao_import_from_client,
             update_account_token,
             export_accounts,
             import_accounts,
@@ -937,6 +1035,8 @@ pub fn run() {
             probe_login_webview,
             apply_login_webview_token,
             apply_login_webview_new_account,
+            start_doubao_browser_login,
+            apply_login_webview_new_doubao_account,
             close_login_webview,
             resize_login_child_webview,
             start_oauth_login,

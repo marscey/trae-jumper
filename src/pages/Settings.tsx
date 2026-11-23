@@ -33,13 +33,13 @@ export function Settings({ onToast, onExport, onImport, onClearData, onClientCha
 
   return (
     <div className="settings-page">
+      <GeneralSection cfg={cfg} />
+
       <ClientSection
         onToast={onToast}
         onClientChange={onClientChange}
         onAccountsChanged={onAccountsChanged}
       />
-
-      <GeneralSection cfg={cfg} />
 
       <RenewSection cfg={cfg} />
 

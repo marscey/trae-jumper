@@ -43,6 +43,7 @@ impl AccountManager {
                 "jwt_token": acc.jwt_token,
                 "machine_id": acc.machine_id,
                 "login_source": effective_source,
+                "platform": acc.platform,
                 // —— OAuth Native 完整凭证链（v1.0.0 新增，防止导入后 OAuth 账号丢失自管能力）——
                 "oauth_enabled": acc.oauth_enabled,
                 "oauth_refresh_token": acc.oauth_refresh_token,
@@ -94,6 +95,11 @@ impl AccountManager {
             // 读取导出的来源标记（老格式导出可能没有该字段，默认 Unknown）
             let exported_login_source: AccountLoginSource = item.get("login_source")
                 .and_then(|v| serde_json::from_value::<AccountLoginSource>(v.clone()).ok())
+                .unwrap_or_default();
+
+            // 读取平台标记（老格式导出无此字段，默认 Trae，保证存量兼容）
+            let exported_platform: AccountPlatform = item.get("platform")
+                .and_then(|v| serde_json::from_value::<AccountPlatform>(v.clone()).ok())
                 .unwrap_or_default();
 
             // 读取 OAuth Native 完整凭证链（老格式导出可能没有这些字段，默认零值）
@@ -175,10 +181,43 @@ impl AccountManager {
                     }
                 }
             } else if !cookies.is_empty() {
-                match self.add_account(cookies).await {
-                    Ok(_) => true,
-                    Err(e) => {
-                        !e.to_string().contains("已存在")
+                if exported_platform == AccountPlatform::Doubao {
+                    // 豆包账号：纯 Cookie 会话，走豆包新增校验；网络不可达时按导出数据直接落库兜底
+                    match self.add_doubao_account(cookies.clone()).await {
+                        Ok(_) => true,
+                        Err(e) => {
+                            if e.to_string().contains("已存在") {
+                                true
+                            } else if !exported_user_id.is_empty() {
+                                let mut fallback = Account::new_doubao(
+                                    exported_name.clone(),
+                                    None,
+                                    cookies.clone(),
+                                    exported_user_id.clone(),
+                                    None,
+                                );
+                                fallback.avatar_url = exported_avatar.clone();
+                                fallback.region = exported_region.clone();
+                                let exists = self.store.accounts.iter()
+                                    .any(|a| a.platform == AccountPlatform::Doubao && a.user_id == fallback.user_id);
+                                if !exists {
+                                    self.store.accounts.push(fallback);
+                                    if self.store.active_account_id.is_none() {
+                                        self.store.active_account_id = Some(self.store.accounts.last().unwrap().id.clone());
+                                    }
+                                }
+                                true
+                            } else {
+                                false
+                            }
+                        }
+                    }
+                } else {
+                    match self.add_account(cookies).await {
+                        Ok(_) => true,
+                        Err(e) => {
+                            !e.to_string().contains("已存在")
+                        }
                     }
                 }
             } else {
@@ -199,6 +238,8 @@ impl AccountManager {
                     if !exported_region.is_empty() {
                         acc.region = exported_region.clone();
                     }
+                    // 恢复平台标记（老格式导入缺省 Trae）
+                    acc.platform = exported_platform;
                     // 1. 先恢复 OAuth Native 凭证链（只要导出值有任何一个 OAuth 字段，就整体覆盖）
                     let has_oauth_in_export = oauth_enabled || oauth_refresh_token.is_some();
                     if has_oauth_in_export {

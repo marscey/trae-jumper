@@ -9,8 +9,8 @@ export interface AccountBrief {
   created_at: number;
   machine_id: string | null;
   is_current: boolean; // 是否是当前 Trae IDE 正在使用的账号
-  is_client_active: boolean; // 是否是 Trae 客户端当前登录的账号（单活跃 Token 下由客户端持有有效会话）
-  /** 该账号正在哪些 Trae 客户端中登录（显示名称列表），用于多客户端"当前"标签 */
+  is_client_active: boolean; // 是否是 TRAE 客户端当前登录的账号（单活跃 Token 下由客户端持有有效会话）
+  /** 该账号正在哪些 TRAE 客户端中登录（显示名称列表），用于多客户端"当前"标签 */
   active_in_clients: string[];
   /** 是否有 cookies（浏览器导入的账号才有，可续签；客户端导入/手动Token无 cookies） */
   has_cookies: boolean;
@@ -21,14 +21,18 @@ export interface AccountBrief {
   token_expired_at: string | null; // Token 过期时间
   /** 上次通过 cookies 续签 token 的时间戳（秒）。cookies 本身无明确过期时间，需每 12h 续签保持 session */
   last_cookie_renewal_at: number | null;
-  /** 登录来源：webview_oauth / webview_cookie / client_import / manual_token / unknown（新建打标，存量 unknown）。始终显示在 Trae 账号旁边。 */
+  /** 登录来源：webview_oauth / webview_cookie / client_import / manual_token / unknown（新建打标，存量 unknown）。始终显示在 TRAE 账号旁边。 */
   login_source: string;
   /** 客户端激活类型：native_oauth / injected_oauth / injected_cookie / injected_client / injected_manual / standalone_oauth / standalone_cookie / standalone_manual。仅客户端活跃时显示在"当前"标签里。 */
   login_type: string;
   /** per-account 自动续签后重启客户端覆盖开关：null=跟随总开关，true/false=强制开/关 */
   restart_after_refresh_override?: boolean | null;
+  /** 账号所属平台：trae=Trae 系，doubao=豆包 */
+  platform: "trae" | "doubao";
   /** 今日签到状态（启动时/点击刷新查询，可能为 undefined 表示未查） */
   checkin_status?: CheckinStatusResult;
+  /** 豆包账号签到状态（仅 doubao 平台，D10 checkin 接口返回） */
+  doubao_checkin?: DoubaoCheckinView | null;
 }
 
 // 完整账号信息
@@ -61,6 +65,10 @@ export interface Account {
   oauth_refresh_token?: string | null;
   /** OAuth refresh_token 到期时间（RFC3339） */
   oauth_refresh_expired_at?: string | null;
+  /** 账号所属平台：trae=Trae 系，doubao=豆包 */
+  platform?: "trae" | "doubao";
+  /** 最近一次拉取的豆包额度快照（仅 doubao 平台） */
+  doubao_snapshot?: DoubaoQuotaView | null;
 }
 
 // 使用量汇总
@@ -226,7 +234,7 @@ export interface CheckinConfig {
   auto_refresh_interval: number;
   /** 是否开启后端 Token 自动续签（后台每分钟检查即将过期的 Token 并用 cookies 续签） */
   auto_renew_enabled: boolean;
-  /** 自动续签后是否重启 Trae 客户端（写回 storage.json 后 kill+relaunch） */
+  /** 自动续签后是否重启 TRAE 客户端（写回 storage.json 后 kill+relaunch） */
   auto_restart_after_refresh: boolean;
   /** 是否开启自动签到（晚于设定时间后自动为未签到账号签到） */
   auto_checkin_enabled: boolean;
@@ -240,10 +248,99 @@ export interface CheckinConfig {
 
 // ============ App 列表运行态 ============
 
-/** 账号卡片运行态：在 AccountBrief 基础上叠加懒加载的用量/积分数据 */
+/** 账号卡片运行态：在 AccountBrief 基础上叠加懒加载的用量/积分/豆包额度数据 */
 export interface AccountWithUsage extends AccountBrief {
   usage?: UsageSummary | null;
   credits?: CreditSummary | null;
+  /** 豆包额度概览（仅 doubao 平台） */
+  doubao_quota?: DoubaoQuotaView | null;
+}
+
+// ============ 豆包额度 / 用量体系 ============
+
+/** 豆包额度分组汇总（赠送 / 付费等） */
+export interface DoubaoQuotaSummary {
+  category: number | null;
+  title: string;
+  remaining_amount: string;
+  remaining_number: number;
+}
+
+/** 豆包单个额度包（付费 / 赠送 / 活动奖励） */
+export interface DoubaoQuotaPackage {
+  category: number | null;
+  display_name: string;
+  sku_key?: string | null;
+  total_amount_str: string;
+  used_amount_str: string;
+  total_amount: number;
+  used_amount: number;
+  used_percent: number;
+  end_time_ms?: number | null;
+  status?: number | null;
+  subscription_type?: number | null;
+  is_resettable?: boolean | null;
+}
+
+/** 豆包额度聚合（窗口分组汇总口径，进度条使用） */
+export interface DoubaoQuotaAggregate {
+  total_amount: number;
+  used_amount: number;
+  left_amount: number;
+  used_percent: number;
+  /** window=服务端窗口汇总；packages=本地明细求和兜底 */
+  source: string;
+}
+
+/** 豆包额度概览归一化视图（D2） */
+export interface DoubaoQuotaView {
+  plan_name: string;
+  plan_short_name?: string | null;
+  total_remaining: string;
+  total_remaining_number: number;
+  has_active_subscription: boolean;
+  summaries: DoubaoQuotaSummary[];
+  packages: DoubaoQuotaPackage[];
+  aggregate?: DoubaoQuotaAggregate | null;
+  service_current_time_ms?: number | null;
+}
+
+/** 豆包消耗流水条目（D4） */
+export interface DoubaoTimelineEntry {
+  entry_type?: number | null;
+  display_name: string;
+  item_id?: string | null;
+  model_display_name: string;
+  occurred_at_ms?: number | null;
+  quota_source_display: string;
+  quota_source_code?: string | null;
+}
+
+/** 豆包消耗流水归一化视图（D4） */
+export interface DoubaoTimelineView {
+  categories: number[];
+  consumption_column_title: string;
+  window_start_time_ms?: number | null;
+  window_end_time_ms?: number | null;
+  has_more: boolean;
+  cursor?: string | null;
+  entries: DoubaoTimelineEntry[];
+}
+
+/** 豆包签到归一化视图（D10 checkin 接口返回） */
+export interface DoubaoCheckinView {
+  /** 今日是否已签到 */
+  checked_in: boolean;
+  /** 签到日期 "YYYY-MM-DD" */
+  checkin_date?: string | null;
+  /** 连续签到天数 */
+  continuous_days: number;
+  /** 本次/最近奖励额度 */
+  reward_amount: number;
+  /** 奖励码（如 "quota_grant"） */
+  reward_code?: string | null;
+  /** 奖励类型（如 "quota_grant"） */
+  reward_type?: string | null;
 }
 
 /** 账号列表视图模式 */

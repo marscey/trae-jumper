@@ -10,7 +10,7 @@ export function GeneralSection({ cfg }: GeneralSectionProps) {
 
   return (
     <div className="settings-section">
-      <h3>通用设置</h3>
+      <h3>通用设置 <span className="section-badge shared">所有账号</span></h3>
       <div className="setting-item">
         <div className="setting-info">
           <div className="setting-label">自动刷新</div>

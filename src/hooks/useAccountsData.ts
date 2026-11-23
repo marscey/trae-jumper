@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { listen } from "@tauri-apps/api/event";
 import * as api from "../api";
-import type { AccountBrief, AccountWithUsage, CheckinAllStatusItem, CheckinConfig } from "../types";
+import type { AccountBrief, AccountWithUsage, CheckinAllStatusItem, CheckinConfig, DoubaoCheckinView } from "../types";
 
 /**
  * 账号数据状态中枢：列表加载 / 积分懒加载 / 签到状态后台加载 / 局部刷新，
@@ -62,6 +62,57 @@ export function useAccountsData() {
     }
   }, []);
 
+  // 豆包签到状态后台加载（批量查询所有豆包账号，失败静默）
+  const loadDoubaoCheckinStatuses = useCallback(async (): Promise<void> => {
+    try {
+      const results = await api.doubaoCheckinStatusAll();
+      const statusMap = new Map<string, DoubaoCheckinView | null>();
+      for (const [accountId, view] of results) {
+        statusMap.set(accountId, view);
+      }
+      setAccounts((prev) =>
+        prev.map((account) => ({
+          ...account,
+          doubao_checkin: account.platform === "doubao"
+            ? (statusMap.has(account.id) ? statusMap.get(account.id) : account.doubao_checkin)
+            : account.doubao_checkin,
+        }))
+      );
+    } catch (err) {
+      console.warn("[WARN] 批量查询豆包签到状态失败:", err);
+    }
+  }, []);
+
+  // 按平台加载额度：豆包走 D2 概览；Trae 走积分接口（非计费回退旧配额）
+  const loadAccountQuota = useCallback(async (account: AccountBrief, index: number) => {
+    if (account.platform === "doubao") {
+      const quota = await api
+        .getDoubaoQuota(account.id)
+        .catch((err) => { markTokenExpired(account.id, err); return null; });
+      setAccounts((prev) =>
+        prev.map((a, i) => (i === index ? { ...a, doubao_quota: quota } : a))
+      );
+      return;
+    }
+
+    const credits = await api
+      .getAccountCredits(account.id)
+      .catch((err) => { markTokenExpired(account.id, err); return null; });
+
+    setAccounts((prev) =>
+      prev.map((a, i) => (i === index ? { ...a, credits } : a))
+    );
+
+    if (credits && !credits.is_credits_billing) {
+      const usage = await api
+        .getAccountUsage(account.id)
+        .catch((err) => { markTokenExpired(account.id, err); return null; });
+      setAccounts((prev) =>
+        prev.map((a, i) => (i === index ? { ...a, usage } : a))
+      );
+    }
+  }, [markTokenExpired]);
+
   // 加载账号列表（先显示列表，再后台加载使用量 + 积分 + 签到状态）
   // 增加重试机制：Tauri 初始化可能需要时间，首次调用失败时自动重试
   const loadAccounts = useCallback(async (retries = 2): Promise<void> => {
@@ -77,31 +128,12 @@ export function useAccountsData() {
         // 标记所有账号进入"积分加载中"状态（占位 UI）
         setCreditsLoadingIds(new Set(list.map((a) => a.id)));
 
-        // 并行加载积分：每个账号的请求各自独立，完成一个立即更新显示一个（不等待全部完成）
+        // 并行加载额度：每个账号的请求各自独立，完成一个立即更新显示一个（不等待全部完成）
         await Promise.all(
           list.map(async (account, index) => {
-            // 积分优先；旧配额作为回退由后端在 get_account_credits 内自动处理，
-            // 这里不再额外调用 getAccountUsage，减少请求量（CN/WORK 用积分接口，国际版后端回退）
-            const credits = await api
-              .getAccountCredits(account.id)
-              .catch((err) => { markTokenExpired(account.id, err); return null; });
+            await loadAccountQuota(account, index);
 
-            // 逐个更新对应账号（按 index 对齐）
-            setAccounts((prev) =>
-              prev.map((a, i) => (i === index ? { ...a, credits } : a))
-            );
-
-            // 若积分接口返回"非积分计费"（国际版），再补拉旧配额使用量
-            if (credits && !credits.is_credits_billing) {
-              const usage = await api
-                .getAccountUsage(account.id)
-                .catch((err) => { markTokenExpired(account.id, err); return null; });
-              setAccounts((prev) =>
-                prev.map((a, i) => (i === index ? { ...a, usage } : a))
-              );
-            }
-
-            // 该账号积分加载完成，移出加载集合
+            // 该账号额度加载完成，移出加载集合
             setCreditsLoadingIds((prev) => {
               const next = new Set(prev);
               next.delete(account.id);
@@ -113,6 +145,8 @@ export function useAccountsData() {
 
       // 签到状态独立后台并行加载，与积分解耦、不阻塞积分显示
       loadCheckinStatuses().catch(() => {});
+      // 豆包签到状态独立后台并行加载
+      loadDoubaoCheckinStatuses().catch(() => {});
     } catch (err: any) {
       console.error("[ERROR] loadAccounts failed:", err);
       if (retries > 0) {
@@ -124,7 +158,7 @@ export function useAccountsData() {
         setLoading(false);
       }
     }
-  }, [loadCheckinStatuses, markTokenExpired]);
+  }, [loadCheckinStatuses, loadDoubaoCheckinStatuses, loadAccountQuota, markTokenExpired]);
 
   // 仅同步「当前账号」标记（切换目标客户端后调用）。
   // 只做本地状态更新（is_current 徽章），不重新请求账号列表与用量/积分/签到状态。
@@ -147,34 +181,21 @@ export function useAccountsData() {
         });
       });
 
-      // 逐个请求积分数据，完成后原地替换
+      // 逐个请求额度数据，完成后原地替换
       await Promise.all(
         list.map(async (account, index) => {
-          const credits = await api
-            .getAccountCredits(account.id)
-            .catch((err) => { markTokenExpired(account.id, err); return null; });
-
-          setAccounts((prev) =>
-            prev.map((a, i) => (i === index ? { ...a, credits } : a))
-          );
-
-          if (credits && !credits.is_credits_billing) {
-            const usage = await api
-              .getAccountUsage(account.id)
-              .catch((err) => { markTokenExpired(account.id, err); return null; });
-            setAccounts((prev) =>
-              prev.map((a, i) => (i === index ? { ...a, usage } : a))
-            );
-          }
+          await loadAccountQuota(account, index);
         })
       );
 
       // 签到状态后台加载
       loadCheckinStatuses().catch(() => {});
+      // 豆包签到状态后台加载
+      loadDoubaoCheckinStatuses().catch(() => {});
     } catch (err) {
       console.warn("[WARN] 局部刷新失败:", err);
     }
-  }, [loadCheckinStatuses, markTokenExpired]);
+  }, [loadCheckinStatuses, loadDoubaoCheckinStatuses, loadAccountQuota, markTokenExpired]);
 
   // 初始化加载：等待 Tauri 就绪后加载账号
   // 顺序：等待 Tauri → 续签 Token（含客户端同步）→ 加载账号

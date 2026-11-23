@@ -304,3 +304,95 @@ pub async fn apply_login_webview_new_account_inner(
 
     Ok(account.email)
 }
+
+// ============ 豆包平台 WebView 登录（纯 Cookie 会话，无 JWT 探测） ============
+
+const DOUBAO_LOGIN_URL: &str = "https://www.doubao.com/chat/";
+
+/// 按域名白名单从登录子 webview 读取完整 cookies（含 HttpOnly）。
+fn read_child_webview_cookies_filtered(app: &AppHandle, domains: &[&str]) -> Option<String> {
+    let wv = app.get_webview("trae-login-child")?;
+    let cookies = wv.cookies().ok()?;
+    let injected_cookies = ["trae_jumper_token", "trae_jumper_probe"];
+    let cookie_str: String = cookies
+        .iter()
+        .filter(|c| {
+            if injected_cookies.contains(&c.name()) {
+                return false;
+            }
+            c.domain()
+                .map(|d| domains.iter().any(|td| d.contains(td)))
+                .unwrap_or(false)
+        })
+        .map(|c| format!("{}={}", c.name(), c.value()))
+        .collect::<Vec<_>>()
+        .join("; ");
+
+    if cookie_str.is_empty() {
+        None
+    } else {
+        Some(cookie_str)
+    }
+}
+
+/// 启动豆包登录子 webview（无痕会话，Cookie 鉴权，不做 localStorage Token 探测）。
+pub async fn start_doubao_login_flow(app: AppHandle) -> Result<(), String> {
+    if let Some(wv) = app.get_webview("trae-login-child") {
+        let _ = wv.set_focus();
+        return Ok(());
+    }
+
+    let main_window = app.get_window("main").ok_or_else(|| "找不到主窗口".to_string())?;
+
+    if let Some(old) = app.get_webview("trae-login-child") {
+        let _ = old.close();
+    }
+    place_login_child_webview(&main_window)?;
+
+    let builder = WebviewBuilder::new(
+        "trae-login-child",
+        WebviewUrl::External(
+            DOUBAO_LOGIN_URL.parse().map_err(|e| format!("登录地址无效: {}", e))?,
+        ),
+    )
+    .incognito(true);
+
+    let scale = main_window.scale_factor().unwrap_or(1.0);
+    let inner = main_window.inner_size().unwrap_or(tauri::PhysicalSize {
+        width: 1000,
+        height: 700,
+    });
+    let w = inner.width as f64 / scale;
+    let h = inner.height as f64 / scale;
+    let header_h = 56.0_f64;
+    let footer_h = 56.0_f64;
+
+    main_window
+        .add_child(
+            builder,
+            LogicalPosition::new(0.0, header_h),
+            LogicalSize::new(w, h - header_h - footer_h),
+        )
+        .map_err(|e| e.to_string())?;
+
+    let _ = main_window.set_resizable(true);
+    let _ = main_window.set_maximizable(true);
+
+    Ok(())
+}
+
+/// 应用豆包登录窗口当前 Cookie 新增账号（手动确认调用，成功后关闭登录窗口）。
+pub async fn apply_login_webview_new_doubao_inner(
+    app: &AppHandle,
+    state: Arc<Mutex<AccountManager>>,
+) -> Result<String, anyhow::Error> {
+    let cookies = read_child_webview_cookies_filtered(app, &["doubao.com"])
+        .ok_or_else(|| anyhow::anyhow!("未读取到豆包登录 Cookie，请先在登录窗口完成登录后点击确认"))?;
+
+    let mut manager = state.lock().await;
+    let account = manager.add_doubao_account(cookies).await?;
+
+    close_login_webview_internal(app);
+
+    Ok(account.name)
+}

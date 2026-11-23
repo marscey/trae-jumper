@@ -3,11 +3,12 @@ use std::fs;
 use std::path::PathBuf;
 
 use super::types::*;
-use crate::api::{CheckinHeaderEntry, CheckinResult, CheckinStatusResult, CreditSummary, TraeApiClient, UsageQueryResponse, UsageSummary};
+use crate::api::{CheckinHeaderEntry, CheckinResult, CheckinStatusResult, CreditSummary, DoubaoApiClient, DoubaoCheckinView, DoubaoQuotaView, DoubaoTimelineView, TraeApiClient, UsageQueryResponse, UsageSummary};
 
 
 // ==== 职责拆分子模块（同一 impl 的分布文件，按领域聚合方法） ====
 mod checkin;
+mod doubao;
 mod import_export;
 mod switch;
 mod token;
@@ -285,6 +286,15 @@ impl AccountManager {
 
         self.store.accounts.iter().map(|account| {
             let is_current = current_id == Some(account.id.as_str());
+
+            // 豆包账号：不参与 Trae 客户端活跃态 / 注入类型推导，返回精简 brief。
+            if account.platform == AccountPlatform::Doubao {
+                let mut brief = AccountBrief::from_account(account, false);
+                brief.has_cookies = !account.cookies.is_empty();
+                brief.login_type = AccountLoginType::StandaloneCookie;
+                return brief;
+            }
+
             // 来源 runtime 推断/修正：
             // 1. Unknown 按凭证特征推断：oauth_enabled → WebviewOauth，有 cookies → WebviewCookie
             // 2. 来源与凭证不一致的脏数据修正：oauth_enabled=true 但来源非 WebviewOauth → 强制 WebviewOauth
@@ -403,6 +413,11 @@ impl AccountManager {
             account.jwt_token.as_ref().map(|t| t.len()),
             account.oauth_refresh_token.is_some(),
         );
+
+        // 豆包账号：走 D1 资料 + D2 概览快照刷新，不参与 Trae Token 续签链路。
+        if account.platform == AccountPlatform::Doubao {
+            return self.refresh_doubao_info(account_id).await;
+        }
 
         // GetUserInfo 结果（只有 cookies 路径能拿到完整展示字段）
         let mut user_info: Option<crate::api::UserInfoResult> = None;

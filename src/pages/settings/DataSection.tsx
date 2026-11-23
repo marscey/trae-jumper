@@ -8,7 +8,7 @@ interface DataSectionProps {
 export function DataSection({ onExport, onImport, onClearData }: DataSectionProps) {
   return (
     <div className="settings-section">
-      <h3>数据管理</h3>
+      <h3>数据管理 <span className="section-badge shared">所有账号</span></h3>
       <div className="setting-item">
         <div className="setting-info">
           <div className="setting-label">导出数据</div>
