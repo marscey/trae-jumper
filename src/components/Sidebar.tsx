@@ -1,10 +1,22 @@
 import { useEffect, useRef, useState } from "react";
-import { BarChart3, Users, Settings, Info, ChevronsLeft, ChevronsRight } from "lucide-react";
+import {
+  BarChart3,
+  Users,
+  Settings,
+  Info,
+  ChevronsLeft,
+  ChevronsRight,
+  ArrowDownToLine,
+} from "lucide-react";
 import logoImage from "../assets/logo.png";
 
 interface SidebarProps {
   currentPage: string;
   onNavigate: (page: string) => void;
+  /** 有新版本时显示的更新状态（可选） */
+  updateStatus?: "available" | "downloading" | "ready";
+  /** 更新弹窗图标被点击时 */
+  onOpenUpdate?: () => void;
 }
 
 const menuItems = [
@@ -16,7 +28,7 @@ const menuItems = [
 
 const AUTO_COLLAPSE_WIDTH = 1100;
 
-export function Sidebar({ currentPage, onNavigate }: SidebarProps) {
+export function Sidebar({ currentPage, onNavigate, updateStatus, onOpenUpdate }: SidebarProps) {
   const [collapsed, setCollapsed] = useState(() => window.innerWidth < AUTO_COLLAPSE_WIDTH);
   const prevNarrowRef = useRef(window.innerWidth < AUTO_COLLAPSE_WIDTH);
 
@@ -36,6 +48,8 @@ export function Sidebar({ currentPage, onNavigate }: SidebarProps) {
   }, []);
 
   const toggleCollapsed = () => setCollapsed((v) => !v);
+
+  const hasUpdateIndicator = updateStatus != null;
 
   return (
     <aside className={`sidebar ${collapsed ? "collapsed" : ""}`}>
@@ -66,6 +80,41 @@ export function Sidebar({ currentPage, onNavigate }: SidebarProps) {
       </nav>
 
       <div className="sidebar-footer">
+        {/* 更新入口图标：有新版本时高亮 + 红点 */}
+        {hasUpdateIndicator && onOpenUpdate && (
+          <button
+            className={`sidebar-item footer-update-indicator ${updateStatus}`}
+            onClick={onOpenUpdate}
+            title={
+              updateStatus === "available"
+                ? "有新版本可用，点击查看"
+                : updateStatus === "downloading"
+                ? "正在下载更新…"
+                : "更新已完成，点击重启"
+            }
+          >
+            <span className="sidebar-icon">
+              <ArrowDownToLine />
+              {updateStatus === "downloading" && (
+                <span className="update-spinner-badge" />
+              )}
+              {updateStatus === "ready" && (
+                <span className="update-ready-badge" />
+              )}
+              {updateStatus === "available" && (
+                <span className="update-dot-badge" />
+              )}
+            </span>
+            <span className="sidebar-label">
+              {updateStatus === "available"
+                ? "新版本可用"
+                : updateStatus === "downloading"
+                ? "下载中…"
+                : "更新完成"}
+            </span>
+          </button>
+        )}
+
         <div
           className="sidebar-item footer-toggle"
           onClick={toggleCollapsed}

@@ -5,6 +5,8 @@ export interface UpdateInfo {
   version: string;
   /** 本地化后的发布日期（无则为空串） */
   date: string;
+  /** 发布说明 / release notes（可能为空） */
+  notes: string;
 }
 
 /** 检查是否有新版本；无更新时返回 null */
@@ -15,6 +17,7 @@ export async function checkForUpdate(): Promise<UpdateInfo | null> {
     update,
     version: update.version,
     date: update.date ? new Date(update.date).toLocaleDateString("zh-CN") : "",
+    notes: update.body ?? "",
   };
 }
 
